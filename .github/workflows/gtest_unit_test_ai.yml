@@ -140,7 +140,8 @@ jobs:
 
       - name: "Run Unit Test Validator with AI"
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEY: abcd1234
+          # ${{ secrets.OPENAI_API_KEY }}
         run: |
           echo "=== Running AI-Powered Unit Test Validation ==="
           
