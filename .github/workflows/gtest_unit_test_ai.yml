@@ -82,7 +82,7 @@ jobs:
           jq -r '.[] | select(.filename | test("\\.(c|cpp|cc|cxx|h|hpp|hxx)$")) | "File: \(.filename) | Additions: \(.additions) | Deletions: \(.deletions) | Total: \(.additions + .deletions)"' pr_diff.json
 
       - name: "Upload PR analysis artifacts"
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: pr-analysis
           path: |
@@ -112,7 +112,7 @@ jobs:
           pip install requests litellm
 
       - name: "Download PR analysis artifacts"
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: pr-analysis
 
@@ -209,7 +209,7 @@ jobs:
       #     fi
 
       - name: "Upload test mapping artifacts"
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: test-mappings
           path: |
@@ -232,7 +232,7 @@ jobs:
           sudo apt-get install -y gcc g++ gcov lcov
 
       - name: "Download artifacts"
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: test-mappings
 
@@ -393,7 +393,7 @@ jobs:
           fi
 
       - name: "Upload coverage reports"
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: coverage-reports
