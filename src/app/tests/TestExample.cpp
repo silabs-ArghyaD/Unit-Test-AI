@@ -1,4 +1,4 @@
-#include <pw_unit_test/framework.h>
+#include <gtest/gtest.h>
 #include "../../../test_sample.c"
 
 class TestSampleValidation : public ::testing::Test {
@@ -46,3 +46,11 @@ TEST_F(TestSampleValidation, FactorialEdgeCases) {
     EXPECT_EQ(factorial(-1), 1);  // Should return 1 for negative numbers based on implementation
     EXPECT_EQ(factorial(0), 1);   // 0! = 1
 }
+
+// Simple main function for standalone compilation
+#ifndef GTEST_HAS_MAIN
+int main(int argc, char **argv) {
+    ::testing::InitGoogleTest(&argc, argv);
+    return RUN_ALL_TESTS();
+}
+#endif
