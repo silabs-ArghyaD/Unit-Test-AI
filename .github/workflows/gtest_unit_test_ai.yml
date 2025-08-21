@@ -222,11 +222,36 @@ jobs:
       - name: "Install GCC and GCov for Code Coverage"
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential lcov
+          sudo apt-get install -y build-essential lcov libgtest-dev cmake
           
-          # Verify gcov is available (it comes with gcc)
+          # Build Google Test properly
+          cd /usr/src/gtest
+          sudo cmake .
+          sudo cmake --build . --config Release
+          sudo cp lib/*.a /usr/lib/ || sudo cp *.a /usr/lib/
+          
+          # Also install Google Mock if available
+          if [ -d "/usr/src/gmock" ]; then
+            cd /usr/src/gmock
+            sudo cmake .
+            sudo cmake --build . --config Release
+            sudo cp lib/*.a /usr/lib/ || sudo cp *.a /usr/lib/
+          fi
+          
+          # Verify tools are available
           gcov --version
           gcc --version
+          
+          # Test GTest installation
+          echo "Testing GTest installation..."
+          echo '#include <gtest/gtest.h>
+          TEST(TestSuite, TestCase) { EXPECT_EQ(1, 1); }
+          int main(int argc, char **argv) { 
+            ::testing::InitGoogleTest(&argc, argv); 
+            return RUN_ALL_TESTS(); 
+          }' > /tmp/test_gtest.cpp
+          
+          g++ -std=c++11 /tmp/test_gtest.cpp -lgtest -lgtest_main -pthread -o /tmp/test_gtest && echo "✅ GTest installation successful" || echo "❌ GTest installation failed"
 
       - name: "Check Code Coverage of Mapped Files"
         env:
@@ -272,8 +297,8 @@ jobs:
               # Compile with coverage flags
               echo "Compiling $test_file with coverage flags..."
               
-              # Try to compile with gcov flags (this may fail if dependencies are missing)
-              if g++ -fprofile-arcs -ftest-coverage -o "coverage_reports/${test_name}_test" "$test_file" 2>/dev/null; then
+              # Try to compile with gcov flags and link with GTest
+              if g++ -std=c++11 -fprofile-arcs -ftest-coverage -pthread "$test_file" -lgtest -lgtest_main -o "coverage_reports/${test_name}_test" 2>/dev/null; then
                 echo "✅ Compilation successful for $test_file"
                 
                 # Run the test (if it compiles and runs)
