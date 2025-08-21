@@ -4,6 +4,12 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+# Add explicit permissions for the workflow
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+
 jobs:
   validate-tests:
     runs-on: ubuntu-latest
