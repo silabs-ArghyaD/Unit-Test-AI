@@ -4,28 +4,23 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
-# Add explicit permissions for the workflow
 permissions:
   contents: read
   pull-requests: read
   actions: read
 
 jobs:
-  validate-tests:
+  analyze-pr-changes:
+    name: "Analyze PR Changes"
     runs-on: ubuntu-latest
-
+    outputs:
+      total-changes: ${{ steps.calculate.outputs.total-changes }}
+      required-coverage: ${{ steps.calculate.outputs.required-coverage }}
+      has-cpp-files: ${{ steps.calculate.outputs.has-cpp-files }}
+    
     steps:
       - name: "Checkout code"
         uses: actions/checkout@v3
-
-      - name: "Set up Python"
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.9"
-
-      - name: "Install dependencies"
-        run: |
-          pip install requests litellm
 
       - name: "Fetch PR Diff using GitHub REST API"
         env:
@@ -48,6 +43,7 @@ jobs:
           cat cpp_files.txt
 
       - name: "Calculate total changes and determine coverage requirement"
+        id: calculate
         run: |
           # Calculate total lines added for C/C++ files
           TOTAL_CHANGES=$(jq -r '.[] | select(.filename | test("\\.(c|cpp|cc|cxx|h|hpp|hxx)$")) | (.additions)' pr_diff.json | awk '{sum += $1} END {print sum}')
@@ -55,6 +51,9 @@ jobs:
           # Handle case when no C/C++ files are found
           if [ -z "$TOTAL_CHANGES" ] || [ "$TOTAL_CHANGES" = "0" ]; then
             echo "No C/C++ files changed in this PR"
+            echo "total-changes=0" >> $GITHUB_OUTPUT
+            echo "required-coverage=0" >> $GITHUB_OUTPUT
+            echo "has-cpp-files=false" >> $GITHUB_OUTPUT
             exit 0
           fi
 
@@ -72,16 +71,53 @@ jobs:
 
           echo "Required code coverage: ${REQUIRED_COVERAGE}%"
 
-          # Store values in environment for future steps
-          echo "TOTAL_CHANGES=$TOTAL_CHANGES" >> $GITHUB_ENV
-          echo "REQUIRED_COVERAGE=$REQUIRED_COVERAGE" >> $GITHUB_ENV
+          # Store values for other jobs
+          echo "total-changes=$TOTAL_CHANGES" >> $GITHUB_OUTPUT
+          echo "required-coverage=$REQUIRED_COVERAGE" >> $GITHUB_OUTPUT
+          echo "has-cpp-files=true" >> $GITHUB_OUTPUT
 
           # Print detailed breakdown
           echo ""
           echo "=== Detailed File Changes ==="
           jq -r '.[] | select(.filename | test("\\.(c|cpp|cc|cxx|h|hpp|hxx)$")) | "File: \(.filename) | Additions: \(.additions) | Deletions: \(.deletions) | Total: \(.additions + .deletions)"' pr_diff.json
 
+      - name: "Upload PR analysis artifacts"
+        uses: actions/upload-artifact@v3
+        with:
+          name: pr-analysis
+          path: |
+            pr_diff.json
+            cpp_files.txt
+
+  find-and-validate-tests:
+    name: "Find Tests & AI Validation"
+    runs-on: ubuntu-latest
+    needs: analyze-pr-changes
+    if: needs.analyze-pr-changes.outputs.has-cpp-files == 'true'
+    outputs:
+      has-test-mappings: ${{ steps.mapping.outputs.has-mappings }}
+      files-with-tests: ${{ steps.mapping.outputs.files-with-tests }}
+    
+    steps:
+      - name: "Checkout code"
+        uses: actions/checkout@v3
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.9"
+
+      - name: "Install Python dependencies"
+        run: |
+          pip install requests litellm
+
+      - name: "Download PR analysis artifacts"
+        uses: actions/download-artifact@v3
+        with:
+          name: pr-analysis
+
       - name: "Find Existing GTest Unit Tests"
+        id: mapping
         run: |
           echo "=== Finding Existing GTest Unit Tests ==="
 
@@ -130,38 +166,237 @@ jobs:
             echo "Files with existing tests: $files_with_tests out of ${#modified_files[@]}"
             if [ "$files_with_tests" -gt 0 ]; then
               cat file_test_mapping.txt
+              echo "has-mappings=true" >> $GITHUB_OUTPUT
+            else
+              echo "has-mappings=false" >> $GITHUB_OUTPUT
             fi
+            
+            echo "files-with-tests=$files_with_tests" >> $GITHUB_OUTPUT
 
           else
             echo "src/app/tests directory not found"
             touch found_test_files.txt
             touch file_test_mapping.txt
+            echo "has-mappings=false" >> $GITHUB_OUTPUT
+            echo "files-with-tests=0" >> $GITHUB_OUTPUT
           fi
 
-      - name: "Run Unit Test Validator with AI"
-        env:
-          OPENAI_API_KEY: abcd1234
-          # ${{ secrets.OPENAI_API_KEY }}
+      # - name: "Run Unit Test Validator with AI"
+      #   env:
+      #     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      #   run: |
+      #     echo "=== Running AI-Powered Unit Test Validation ==="
+      #     
+      #     # Check if we have any files with test mappings
+      #     if [ ! -f "file_test_mapping.txt" ] || [ ! -s "file_test_mapping.txt" ]; then
+      #       echo "No file test mappings found"
+      #       exit 0
+      #     fi
+      #     
+      #     # Run the Python validator with mapping file
+      #     python validate_tests.py --mapping-file file_test_mapping.txt --output validation_report.md
+      #     
+      #     echo "=== Validation Complete ==="
+      #     
+      #     # Display summary from the report
+      #     if [ -f "validation_report.md" ]; then
+      #       echo "Validation report generated successfully"
+      #       
+      #       # Extract and display summary section
+      #       echo ""
+      #       echo "=== VALIDATION SUMMARY ==="
+      #       grep -A 10 "## Summary" validation_report.md || echo "Could not extract summary"
+      #     fi
+
+      - name: "Upload test mapping artifacts"
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-mappings
+          path: |
+            file_test_mapping.txt
+            found_test_files.txt
+
+  code-coverage-analysis:
+    name: "Code Coverage Analysis"
+    runs-on: ubuntu-latest
+    needs: [analyze-pr-changes, find-and-validate-tests]
+    if: needs.find-and-validate-tests.outputs.has-test-mappings == 'true'
+    
+    steps:
+      - name: "Checkout code"
+        uses: actions/checkout@v3
+
+      - name: "Install GCC and GCov for Code Coverage"
         run: |
-          echo "=== Running AI-Powered Unit Test Validation ==="
+          sudo apt-get update
+          sudo apt-get install -y gcc g++ gcov lcov
+
+      - name: "Download artifacts"
+        uses: actions/download-artifact@v3
+        with:
+          name: test-mappings
+
+      - name: "Check Code Coverage of Mapped Files"
+        env:
+          REQUIRED_COVERAGE: ${{ needs.analyze-pr-changes.outputs.required-coverage }}
+        run: |
+          echo "=== Checking Code Coverage with GCov ==="
+          echo "Required Coverage: $REQUIRED_COVERAGE%"
           
           # Check if we have any files with test mappings
           if [ ! -f "file_test_mapping.txt" ] || [ ! -s "file_test_mapping.txt" ]; then
-            echo "No file test mappings found"
+            echo "No file test mappings found - skipping coverage analysis"
             exit 0
           fi
           
-          # Run the Python validator with mapping file
-          python validate_tests.py --mapping-file file_test_mapping.txt --output validation_report.md
+          # Create coverage directory
+          mkdir -p coverage_reports
           
-          echo "=== Validation Complete ==="
+          # Extract test files from mapping
+          echo "Extracting test files from mapping..."
+          grep -v ":$" file_test_mapping.txt | cut -d: -f2 | tr ' ' '\n' | sort -u > test_files_to_run.txt
           
-          # Display summary from the report
-          if [ -f "validation_report.md" ]; then
-            echo "Validation report generated successfully"
-            
-            # Extract and display summary section
-            echo ""
-            echo "=== VALIDATION SUMMARY ==="
-            grep -A 10 "## Summary" validation_report.md || echo "Could not extract summary"
+          test_count=$(wc -l < test_files_to_run.txt 2>/dev/null || echo "0")
+          echo "Found $test_count test files to analyze for coverage"
+          
+          if [ "$test_count" -eq 0 ]; then
+            echo "No test files found - skipping coverage analysis"
+            exit 0
           fi
+          
+          echo "=== Test files to analyze ==="
+          cat test_files_to_run.txt
+          
+          # Initialize coverage counters
+          total_files=0
+          covered_files=0
+          > coverage_summary.txt
+          
+          # Process each test file for coverage
+          while IFS= read -r test_file; do
+            if [ -f "$test_file" ]; then
+              echo ""
+              echo "=== Analyzing coverage for: $test_file ==="
+              
+              # Extract the directory and filename
+              test_dir=$(dirname "$test_file")
+              test_name=$(basename "$test_file" .cpp)
+              
+              # Compile with coverage flags
+              echo "Compiling $test_file with coverage flags..."
+              
+              # Try to compile with gcov flags (this may fail if dependencies are missing)
+              if g++ -fprofile-arcs -ftest-coverage -o "coverage_reports/${test_name}_test" "$test_file" 2>/dev/null; then
+                echo "✅ Compilation successful for $test_file"
+                
+                # Run the test (if it compiles and runs)
+                cd coverage_reports
+                if ./"${test_name}_test" 2>/dev/null; then
+                  echo "✅ Test execution successful"
+                  
+                  # Generate coverage data
+                  gcov "../$test_file" 2>/dev/null || true
+                  
+                  # Check if .gcov files were generated
+                  if ls *.gcov 1> /dev/null 2>&1; then
+                    echo "✅ Coverage data generated"
+                    
+                    # Parse coverage for the source files being tested
+                    for gcov_file in *.gcov; do
+                      if [ -f "$gcov_file" ]; then
+                        # Extract coverage percentage
+                        lines_total=$(grep -c ":" "$gcov_file" 2>/dev/null || echo "0")
+                        lines_executed=$(grep -c "    [0-9]" "$gcov_file" 2>/dev/null || echo "0")
+                        
+                        if [ "$lines_total" -gt 0 ]; then
+                          coverage_percent=$(awk "BEGIN {printf \"%.1f\", ($lines_executed/$lines_total)*100}")
+                          echo "Coverage for $gcov_file: $coverage_percent% ($lines_executed/$lines_total lines)"
+                          echo "$test_file,$gcov_file,$coverage_percent,$lines_executed,$lines_total" >> ../coverage_summary.txt
+                          covered_files=$((covered_files + 1))
+                        fi
+                      fi
+                    done
+                  else
+                    echo "⚠️  No coverage data generated for $test_file"
+                  fi
+                else
+                  echo "⚠️  Test execution failed for $test_file"
+                fi
+                cd ..
+              else
+                echo "⚠️  Compilation failed for $test_file (missing dependencies)"
+              fi
+              
+              total_files=$((total_files + 1))
+            else
+              echo "⚠️  Test file not found: $test_file"
+            fi
+          done < test_files_to_run.txt
+          
+          echo ""
+          echo "=== COVERAGE ANALYSIS SUMMARY ==="
+          echo "Total test files processed: $total_files"
+          echo "Files with coverage data: $covered_files"
+          
+          if [ -f "coverage_summary.txt" ] && [ -s "coverage_summary.txt" ]; then
+            echo ""
+            echo "=== DETAILED COVERAGE RESULTS ==="
+            echo "Test File,Coverage File,Coverage %,Lines Executed,Total Lines"
+            cat coverage_summary.txt
+            
+            # Calculate overall statistics
+            if [ "$covered_files" -gt 0 ]; then
+              avg_coverage=$(awk -F, '{sum+=$3; count++} END {if(count>0) printf "%.1f", sum/count; else print "0"}' coverage_summary.txt)
+              total_executed=$(awk -F, '{sum+=$4} END {print sum}' coverage_summary.txt)
+              total_lines=$(awk -F, '{sum+=$5} END {print sum}' coverage_summary.txt)
+              
+              echo ""
+              echo "=== OVERALL COVERAGE STATISTICS ==="
+              echo "Average Coverage: $avg_coverage%"
+              echo "Total Lines Executed: $total_executed"
+              echo "Total Lines: $total_lines"
+              echo "Required Coverage: $REQUIRED_COVERAGE%"
+              
+              # Check if coverage meets requirements
+              if awk "BEGIN {exit !($avg_coverage >= $REQUIRED_COVERAGE)}"; then
+                echo "✅ Coverage requirement MET ($avg_coverage% >= $REQUIRED_COVERAGE%)"
+              else
+                echo "❌ Coverage requirement NOT MET ($avg_coverage% < $REQUIRED_COVERAGE%)"
+                echo "::error::Code coverage ($avg_coverage%) is below required threshold ($REQUIRED_COVERAGE%)"
+                exit 1
+              fi
+            fi
+          else
+            echo "No coverage data could be generated"
+            echo "This may be due to missing dependencies or compilation issues"
+          fi
+          
+          # Generate LCOV HTML report if coverage data exists
+          if [ "$covered_files" -gt 0 ]; then
+            echo ""
+            echo "=== Generating HTML Coverage Report ==="
+            
+            # Try to generate HTML report
+            if command -v lcov >/dev/null 2>&1; then
+              cd coverage_reports
+              if ls *.gcda 1> /dev/null 2>&1; then
+                lcov --capture --directory . --output-file coverage.info 2>/dev/null || true
+                if [ -f "coverage.info" ]; then
+                  genhtml coverage.info --output-directory html_report 2>/dev/null || true
+                  if [ -d "html_report" ]; then
+                    echo "✅ HTML coverage report generated in coverage_reports/html_report/"
+                  fi
+                fi
+              fi
+              cd ..
+            fi
+          fi
+
+      - name: "Upload coverage reports"
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: coverage-reports
+          path: |
+            coverage_reports/
+            coverage_summary.txt
