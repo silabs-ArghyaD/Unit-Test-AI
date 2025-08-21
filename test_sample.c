@@ -22,6 +22,16 @@ int subtract(int a, int b) {
 }
 
 /**
+ * @brief Calculate the product of two integers
+ * @param a First integer
+ * @param b Second integer
+ * @return Product of a and b
+ */
+int multiply(int a, int b) {
+    return a * b;
+}
+
+/**
  * @brief Calculate the factorial of a number
  * @param n The number to calculate factorial for
  * @return Factorial of n
@@ -40,6 +50,7 @@ int main() {
     int x = 5, y = 3;
     printf("Sum of %d and %d is: %d\n", x, y, add(x, y));
     printf("Difference of %d and %d is: %d\n", x, y, subtract(x, y));
+    printf("Product of %d and %d is: %d\n", x, y, multiply(x, y));
     
     int fact_num = 5;
     printf("Factorial of %d is: %ld\n", fact_num, factorial(fact_num));
