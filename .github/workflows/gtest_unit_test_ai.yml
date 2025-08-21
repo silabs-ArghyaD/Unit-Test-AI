@@ -17,6 +17,7 @@ jobs:
       total-changes: ${{ steps.calculate.outputs.total-changes }}
       required-coverage: ${{ steps.calculate.outputs.required-coverage }}
       has-cpp-files: ${{ steps.calculate.outputs.has-cpp-files }}
+      cpp-files: ${{ steps.calculate.outputs.cpp-files }}
     
     steps:
       - name: "Checkout code"
@@ -34,7 +35,8 @@ jobs:
           echo "=== PR Diff JSON Response ==="
           cat pr_diff.json
 
-      - name: "Filter C/C++ files"
+      - name: "Filter C/C++ files and calculate changes"
+        id: calculate
         run: |
           # Filter C/C++ files from the PR diff
           jq -r '.[] | select(.filename | test("\\.(c|cpp|cc|cxx|h|hpp|hxx)$")) | .filename' pr_diff.json > cpp_files.txt
@@ -42,9 +44,6 @@ jobs:
           echo "C/C++ files changed in this PR:"
           cat cpp_files.txt
 
-      - name: "Calculate total changes and determine coverage requirement"
-        id: calculate
-        run: |
           # Calculate total lines added for C/C++ files
           TOTAL_CHANGES=$(jq -r '.[] | select(.filename | test("\\.(c|cpp|cc|cxx|h|hpp|hxx)$")) | (.additions)' pr_diff.json | awk '{sum += $1} END {print sum}')
 
@@ -54,6 +53,7 @@ jobs:
             echo "total-changes=0" >> $GITHUB_OUTPUT
             echo "required-coverage=0" >> $GITHUB_OUTPUT
             echo "has-cpp-files=false" >> $GITHUB_OUTPUT
+            echo "cpp-files=" >> $GITHUB_OUTPUT
             exit 0
           fi
 
@@ -71,23 +71,19 @@ jobs:
 
           echo "Required code coverage: ${REQUIRED_COVERAGE}%"
 
+          # Convert cpp_files.txt to comma-separated string for output
+          CPP_FILES=$(cat cpp_files.txt | tr '\n' ',' | sed 's/,$//')
+
           # Store values for other jobs
           echo "total-changes=$TOTAL_CHANGES" >> $GITHUB_OUTPUT
           echo "required-coverage=$REQUIRED_COVERAGE" >> $GITHUB_OUTPUT
           echo "has-cpp-files=true" >> $GITHUB_OUTPUT
+          echo "cpp-files=$CPP_FILES" >> $GITHUB_OUTPUT
 
           # Print detailed breakdown
           echo ""
           echo "=== Detailed File Changes ==="
           jq -r '.[] | select(.filename | test("\\.(c|cpp|cc|cxx|h|hpp|hxx)$")) | "File: \(.filename) | Additions: \(.additions) | Deletions: \(.deletions) | Total: \(.additions + .deletions)"' pr_diff.json
-
-      - name: "Upload PR analysis artifacts"
-        uses: actions/upload-artifact@v4
-        with:
-          name: pr-analysis
-          path: |
-            pr_diff.json
-            cpp_files.txt
 
   find-and-validate-tests:
     name: "Find Tests & AI Validation"
@@ -97,6 +93,7 @@ jobs:
     outputs:
       has-test-mappings: ${{ steps.mapping.outputs.has-mappings }}
       files-with-tests: ${{ steps.mapping.outputs.files-with-tests }}
+      test-files: ${{ steps.mapping.outputs.test-files }}
     
     steps:
       - name: "Checkout code"
@@ -111,24 +108,15 @@ jobs:
         run: |
           pip install requests litellm
 
-      - name: "Download PR analysis artifacts"
-        uses: actions/download-artifact@v4
-        with:
-          name: pr-analysis
-
       - name: "Find Existing GTest Unit Tests"
         id: mapping
+        env:
+          CPP_FILES: ${{ needs.analyze-pr-changes.outputs.cpp-files }}
         run: |
           echo "=== Finding Existing GTest Unit Tests ==="
 
-          # Read modified C/C++ files into array
-          declare -a modified_files
-          while IFS= read -r file; do
-            if [ -n "$file" ]; then
-              modified_files+=("$file")
-            fi
-          done < cpp_files.txt
-
+          # Convert comma-separated string back to array
+          IFS=',' read -ra modified_files <<< "$CPP_FILES"
           echo "Modified C/C++ files: ${#modified_files[@]}"
 
           # Find all GTest files recursively from src/app/tests
@@ -144,41 +132,51 @@ jobs:
             # Map modified files to test files
             files_with_tests=0
             > file_test_mapping.txt
+            declare -a all_test_files
             
             for modified_file in "${modified_files[@]}"; do
-              base_name=$(basename "$modified_file" | sed 's/\.[^.]*$//')
-              
-              # Method: Look for includes of the modified file in test files
-              include_tests=""
-              if [ -f "$modified_file" ]; then
-                include_name=$(basename "$modified_file")
-                include_tests=$(find src/app/tests -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) -exec grep -l "#include.*${include_name}" {} \; 2>/dev/null || true)
-              fi
-              
-              if [ -n "$include_tests" ]; then
-                files_with_tests=$((files_with_tests + 1))
-                echo "$modified_file:$include_tests" >> file_test_mapping.txt
-              else
-                echo "$modified_file:" >> file_test_mapping.txt
+              if [ -n "$modified_file" ]; then
+                # Method: Look for includes of the modified file in test files
+                include_tests=""
+                if [ -f "$modified_file" ]; then
+                  include_name=$(basename "$modified_file")
+                  include_tests=$(find src/app/tests -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) -exec grep -l "#include.*${include_name}" {} \; 2>/dev/null || true)
+                fi
+                
+                if [ -n "$include_tests" ]; then
+                  files_with_tests=$((files_with_tests + 1))
+                  echo "$modified_file:$include_tests" >> file_test_mapping.txt
+                  # Add test files to array
+                  while IFS= read -r test_file; do
+                    all_test_files+=("$test_file")
+                  done <<< "$include_tests"
+                else
+                  echo "$modified_file:" >> file_test_mapping.txt
+                fi
               fi
             done
             
             echo "Files with existing tests: $files_with_tests out of ${#modified_files[@]}"
+            
             if [ "$files_with_tests" -gt 0 ]; then
               cat file_test_mapping.txt
               echo "has-mappings=true" >> $GITHUB_OUTPUT
+              
+              # Remove duplicates and convert to comma-separated string
+              TEST_FILES=$(printf '%s\n' "${all_test_files[@]}" | sort -u | tr '\n' ',' | sed 's/,$//')
+              echo "test-files=$TEST_FILES" >> $GITHUB_OUTPUT
             else
               echo "has-mappings=false" >> $GITHUB_OUTPUT
+              echo "test-files=" >> $GITHUB_OUTPUT
             fi
             
             echo "files-with-tests=$files_with_tests" >> $GITHUB_OUTPUT
 
           else
             echo "src/app/tests directory not found"
-            touch found_test_files.txt
-            touch file_test_mapping.txt
             echo "has-mappings=false" >> $GITHUB_OUTPUT
             echo "files-with-tests=0" >> $GITHUB_OUTPUT
+            echo "test-files=" >> $GITHUB_OUTPUT
           fi
 
       # - name: "Run Unit Test Validator with AI"
@@ -187,14 +185,17 @@ jobs:
       #   run: |
       #     echo "=== Running AI-Powered Unit Test Validation ==="
       #     
-      #     # Check if we have any files with test mappings
-      #     if [ ! -f "file_test_mapping.txt" ] || [ ! -s "file_test_mapping.txt" ]; then
-      #       echo "No file test mappings found"
+      #     # Check if we have any test files
+      #     if [ -z "${{ steps.mapping.outputs.test-files }}" ]; then
+      #       echo "No test files found"
       #       exit 0
       #     fi
       #     
-      #     # Run the Python validator with mapping file
-      #     python validate_tests.py --mapping-file file_test_mapping.txt --output validation_report.md
+      #     # Create test files list for Python script
+      #     echo "${{ steps.mapping.outputs.test-files }}" | tr ',' '\n' > test_files_list.txt
+      #     
+      #     # Run the Python validator
+      #     python validate_tests.py --test-files test_files_list.txt --output validation_report.md
       #     
       #     echo "=== Validation Complete ==="
       #     
@@ -207,14 +208,6 @@ jobs:
       #       echo "=== VALIDATION SUMMARY ==="
       #       grep -A 10 "## Summary" validation_report.md || echo "Could not extract summary"
       #     fi
-
-      - name: "Upload test mapping artifacts"
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-mappings
-          path: |
-            file_test_mapping.txt
-            found_test_files.txt
 
   code-coverage-analysis:
     name: "Code Coverage Analysis"
@@ -231,38 +224,28 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc g++ gcov lcov
 
-      - name: "Download artifacts"
-        uses: actions/download-artifact@v4
-        with:
-          name: test-mappings
-
       - name: "Check Code Coverage of Mapped Files"
         env:
           REQUIRED_COVERAGE: ${{ needs.analyze-pr-changes.outputs.required-coverage }}
+          TEST_FILES: ${{ needs.find-and-validate-tests.outputs.test-files }}
         run: |
           echo "=== Checking Code Coverage with GCov ==="
           echo "Required Coverage: $REQUIRED_COVERAGE%"
           
-          # Check if we have any files with test mappings
-          if [ ! -f "file_test_mapping.txt" ] || [ ! -s "file_test_mapping.txt" ]; then
-            echo "No file test mappings found - skipping coverage analysis"
+          # Check if we have test files
+          if [ -z "$TEST_FILES" ]; then
+            echo "No test files found - skipping coverage analysis"
             exit 0
           fi
           
           # Create coverage directory
           mkdir -p coverage_reports
           
-          # Extract test files from mapping
-          echo "Extracting test files from mapping..."
-          grep -v ":$" file_test_mapping.txt | cut -d: -f2 | tr ' ' '\n' | sort -u > test_files_to_run.txt
+          # Convert comma-separated test files to newline-separated
+          echo "$TEST_FILES" | tr ',' '\n' > test_files_to_run.txt
           
           test_count=$(wc -l < test_files_to_run.txt 2>/dev/null || echo "0")
           echo "Found $test_count test files to analyze for coverage"
-          
-          if [ "$test_count" -eq 0 ]; then
-            echo "No test files found - skipping coverage analysis"
-            exit 0
-          fi
           
           echo "=== Test files to analyze ==="
           cat test_files_to_run.txt
@@ -370,33 +353,3 @@ jobs:
             echo "No coverage data could be generated"
             echo "This may be due to missing dependencies or compilation issues"
           fi
-          
-          # Generate LCOV HTML report if coverage data exists
-          if [ "$covered_files" -gt 0 ]; then
-            echo ""
-            echo "=== Generating HTML Coverage Report ==="
-            
-            # Try to generate HTML report
-            if command -v lcov >/dev/null 2>&1; then
-              cd coverage_reports
-              if ls *.gcda 1> /dev/null 2>&1; then
-                lcov --capture --directory . --output-file coverage.info 2>/dev/null || true
-                if [ -f "coverage.info" ]; then
-                  genhtml coverage.info --output-directory html_report 2>/dev/null || true
-                  if [ -d "html_report" ]; then
-                    echo "✅ HTML coverage report generated in coverage_reports/html_report/"
-                  fi
-                fi
-              fi
-              cd ..
-            fi
-          fi
-
-      - name: "Upload coverage reports"
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: coverage-reports
-          path: |
-            coverage_reports/
-            coverage_summary.txt
