@@ -1,5 +1,27 @@
 #include <gtest/gtest.h>
-#include "../../../test_sample.c"
+#include "../../../test_sample.h"
+
+// Include the implementation (without main function)
+extern "C" {
+    int add(int a, int b) {
+        return a + b;
+    }
+
+    int subtract(int a, int b) {
+        return a - b;
+    }
+
+    int multiply(int a, int b) {
+        return a * b;
+    }
+
+    long factorial(int n) {
+        if (n <= 1) {
+            return 1;
+        }
+        return n * factorial(n - 1);
+    }
+}
 
 class TestSampleValidation : public ::testing::Test {
 protected:
