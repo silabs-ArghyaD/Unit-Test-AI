@@ -1,5 +1,5 @@
 # sample_unit_test.yaml
-name: "Unit Test Validator"
+name: "Sample Unit Test Validator"
 
 on:
   pull_request:
