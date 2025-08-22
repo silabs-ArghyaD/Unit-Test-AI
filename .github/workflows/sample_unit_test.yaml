@@ -257,6 +257,92 @@ jobs:
           }' > /tmp/test_gtest.cpp
           g++ -std=c++17 /tmp/test_gtest.cpp -lgtest -lgtest_main -pthread -o /tmp/test_gtest && echo "✅ GTest installation OK" || echo "❌ GTest installation failed"
 
+      # - name: "Build & Run Tests with Coverage (filter to changed files) - ORIGINAL VERSION"
+      #   env:
+      #     REQUIRED_COVERAGE: ${{ needs.analyze-pr-changes.outputs.required-coverage }}
+      #     TEST_FILES: ${{ needs.find-and-validate-tests.outputs.test-files }}
+      #     CPP_FILES: ${{ needs.analyze-pr-changes.outputs.cpp-files }}
+      #   run: |
+      #     set -euo pipefail
+      #     echo "Required Coverage: $REQUIRED_COVERAGE%"
+      #
+      #     if [ -z "$TEST_FILES" ]; then
+      #       echo "No test files found - skipping coverage analysis"
+      #       exit 0
+      #     fi
+      #
+      #     echo "$CPP_FILES" | tr ',' '\n' > changed_files.txt
+      #     echo "=== Changed files ==="
+      #     cat changed_files.txt
+      #
+      #     mkdir -p build && cd build
+      #     fail_count=0
+      #     pass_count=0
+      #
+      #     # Build each test with likely source(s) included (best-effort heuristic)
+      #     while IFS= read -r tf; do
+      #       [ -z "$tf" ] && continue
+      #       echo ""
+      #       echo "=== Processing test: $tf ==="
+      #       test_name=$(basename "$tf")
+      #       exe_name="${test_name%.*}"
+      #
+      #       # Collect candidate sources by matching #includes to changed files basenames
+      #       includes=$(grep -oE '#include *["<][^">]+' "../$tf" | sed 's/#include *["<]//' || true)
+      #       srcs=""
+      #       while IFS= read -r inc; do
+      #         [ -z "$inc" ] && continue
+      #         base=$(basename "$inc")
+      #         hit=$(grep -m1 -R --include=\*.{c,cc,cpp} -n "$base" .. | cut -d: -f1 | head -n1 || true)
+      #         if [ -n "$hit" ]; then
+      #           srcs="$srcs $hit"
+      #         fi
+      #       done <<< "$includes"
+      #
+      #       echo "Candidate sources: $srcs"
+      #
+      #       if g++ -std=c++17 -fprofile-arcs -ftest-coverage -pthread ../"$tf" $srcs -lgtest -lgtest_main -o "$exe_name"; then
+      #         echo "✅ Build OK: $tf"
+      #         if ./"$exe_name"; then
+      #           echo "✅ Tests passed: $tf"
+      #           pass_count=$((pass_count+1))
+      #         else
+      #           echo "⚠️ Tests failed (continuing): $tf"
+      #         fi
+      #       else
+      #         echo "⚠️ Build failed (continuing): $tf"
+      #         fail_count=$((fail_count+1))
+      #         continue
+      #       fi
+      #     done < <(echo "$TEST_FILES" | tr ',' '\n')
+      #
+      #     echo ""
+      #     echo "Build summary: pass=$pass_count, fail=$fail_count"
+      #
+      #     # Generate coverage only for changed files
+      #     cd ..
+      #     # gcovr filter expects paths; prepend repo root to each
+      #     mapfile -t FILTERS < <(sed "s|^|$(pwd)/|" changed_files.txt)
+      #     # Create a temporary file with --filter entries (one per line)
+      #     : > filters.txt
+      #     for f in "${FILTERS[@]}"; do echo "$f" >> filters.txt; done
+      #
+      #     echo "=== Generating coverage (changed files only) ==="
+      #     # gcovr prints a summary including 'lines: XX.YY%'
+      #     gcovr --root . --gcov-executable gcov --exclude-unreachable-branches \
+      #           --txt --filter "$(pwd)" \
+      #           $(awk '{printf("--filter %s ", $0)}' filters.txt) \
+      #           > coverage_summary.txt || true
+      #
+      #     echo "=== COVERAGE SUMMARY (raw) ==="
+      #     cat coverage_summary.txt || true
+      #
+      #     PCT=$(grep -Eo 'lines:\s*[0-9.]+%' coverage_summary.txt | tail -1 | tr -dc '0-9.')
+      #     PCT=${PCT:-0}
+      #     echo "Average Coverage (changed files): ${PCT}%"
+      #     awk -v p="$PCT" -v r="$REQUIRED_COVERAGE" 'BEGIN { if (p+0 < r+0) exit 1 }' \
+      #       || { echo "::error::Code coverage (${PCT}%) is below required threshold ($REQUIRED_COVERAGE%)"; exit 1; }
+
       - name: "Build & Run Tests with Coverage (filter to changed files)"
         env:
           REQUIRED_COVERAGE: ${{ needs.analyze-pr-changes.outputs.required-coverage }}
@@ -279,7 +365,7 @@ jobs:
           fail_count=0
           pass_count=0
 
-          # Build each test with likely source(s) included (best-effort heuristic)
+          # Build each test with proper source linking
           while IFS= read -r tf; do
             [ -z "$tf" ] && continue
             echo ""
@@ -287,32 +373,64 @@ jobs:
             test_name=$(basename "$tf")
             exe_name="${test_name%.*}"
 
-            # Collect candidate sources by matching #includes to changed files basenames
-            includes=$(grep -oE '#include *["<][^">]+' "../$tf" | sed 's/#include *["<]//' || true)
+            # Smart source file detection based on test file name and includes
             srcs=""
-            while IFS= read -r inc; do
-              [ -z "$inc" ] && continue
-              base=$(basename "$inc")
-              hit=$(grep -m1 -R --include=\*.{c,cc,cpp} -n "$base" .. | cut -d: -f1 | head -n1 || true)
-              if [ -n "$hit" ]; then
-                srcs="$srcs $hit"
+            
+            # Method 1: If test file is TestCalculator.cpp, look for calculator.c
+            if [[ "$test_name" == "TestCalculator.cpp" ]]; then
+              if [ -f "../calculator.c" ]; then
+                srcs="../calculator.c"
+                echo "Found specific source for $test_name: $srcs"
               fi
-            done <<< "$includes"
+            fi
+            
+            # Method 2: Generic approach - look for includes in the test file
+            if [ -z "$srcs" ]; then
+              includes=$(grep -oE '#include *["<][^">]+\.h' "../$tf" | sed 's/#include *["<]//' | sed 's/"//' || true)
+              for inc in $includes; do
+                [ -z "$inc" ] && continue
+                base=$(basename "$inc" .h)
+                # Look for corresponding .c file
+                c_file=$(find .. -name "${base}.c" -type f | head -n1 || true)
+                if [ -n "$c_file" ] && [ -f "$c_file" ]; then
+                  srcs="$srcs $c_file"
+                fi
+              done
+            fi
 
-            echo "Candidate sources: $srcs"
+            echo "Source files to link: $srcs"
 
-            if g++ -std=c++17 -fprofile-arcs -ftest-coverage -pthread ../"$tf" $srcs -lgtest -lgtest_main -o "$exe_name"; then
-              echo "✅ Build OK: $tf"
-              if ./"$exe_name"; then
-                echo "✅ Tests passed: $tf"
-                pass_count=$((pass_count+1))
+            # Compile test with proper source files
+            if [ -n "$srcs" ]; then
+              # Compile with source files
+              if g++ -std=c++17 -fprofile-arcs -ftest-coverage -pthread "../$tf" $srcs -lgtest -lgtest_main -o "$exe_name" 2>/dev/null; then
+                echo "✅ Build OK: $tf (with sources: $srcs)"
+                if ./"$exe_name"; then
+                  echo "✅ Tests passed: $tf"
+                  pass_count=$((pass_count+1))
+                else
+                  echo "⚠️ Tests failed (continuing): $tf"
+                fi
               else
-                echo "⚠️ Tests failed (continuing): $tf"
+                echo "⚠️ Build failed with sources (continuing): $tf"
+                fail_count=$((fail_count+1))
+                continue
               fi
             else
-              echo "⚠️ Build failed (continuing): $tf"
-              fail_count=$((fail_count+1))
-              continue
+              # Try to compile without additional sources (self-contained test)
+              if g++ -std=c++17 -fprofile-arcs -ftest-coverage -pthread "../$tf" -lgtest -lgtest_main -o "$exe_name" 2>/dev/null; then
+                echo "✅ Build OK: $tf (self-contained)"
+                if ./"$exe_name"; then
+                  echo "✅ Tests passed: $tf"
+                  pass_count=$((pass_count+1))
+                else
+                  echo "⚠️ Tests failed (continuing): $tf"
+                fi
+              else
+                echo "⚠️ Build failed - no sources found: $tf"
+                fail_count=$((fail_count+1))
+                continue
+              fi
             fi
           done < <(echo "$TEST_FILES" | tr ',' '\n')
 
