@@ -298,46 +298,67 @@ jobs:
               echo "Compiling $test_file with coverage flags..."
               
               # Try to compile with gcov flags and link with GTest
-              if g++ -std=c++11 -fprofile-arcs -ftest-coverage -pthread "$test_file" -lgtest -lgtest_main -o "coverage_reports/${test_name}_test" 2>/dev/null; then
-                echo "✅ Compilation successful for $test_file"
-                
-                # Run the test (if it compiles and runs)
-                cd coverage_reports
-                if ./"${test_name}_test" 2>/dev/null; then
-                  echo "✅ Test execution successful"
-                  
-                  # Generate coverage data
-                  gcov "../$test_file" 2>/dev/null || true
-                  
-                  # Check if .gcov files were generated
-                  if ls *.gcov 1> /dev/null 2>&1; then
-                    echo "✅ Coverage data generated"
-                    
-                    # Parse coverage for the source files being tested
-                    for gcov_file in *.gcov; do
-                      if [ -f "$gcov_file" ]; then
-                        # Extract coverage percentage
-                        lines_total=$(grep -c ":" "$gcov_file" 2>/dev/null || echo "0")
-                        lines_executed=$(grep -c "    [0-9]" "$gcov_file" 2>/dev/null || echo "0")
-                        
-                        if [ "$lines_total" -gt 0 ]; then
-                          coverage_percent=$(awk "BEGIN {printf \"%.1f\", ($lines_executed/$lines_total)*100}")
-                          echo "Coverage for $gcov_file: $coverage_percent% ($lines_executed/$lines_total lines)"
-                          echo "$test_file,$gcov_file,$coverage_percent,$lines_executed,$lines_total" >> ../coverage_summary.txt
-                          covered_files=$((covered_files + 1))
-                        fi
-                      fi
-                    done
-                  else
-                    echo "⚠️  No coverage data generated for $test_file"
-                  fi
-                else
-                  echo "⚠️  Test execution failed for $test_file"
-                fi
-                cd ..
-              else
-                echo "⚠️  Compilation failed for $test_file (missing dependencies)"
+              # First compile the C source file with coverage
+              c_source_file=""
+              if [[ "$test_file" == *"TestCalculator.cpp"* ]]; then
+                c_source_file="../../../calculator.c"
               fi
+              
+              if [ -n "$c_source_file" ] && [ -f "$c_source_file" ]; then
+                echo "Compiling C source: $c_source_file"
+                gcc -fprofile-arcs -ftest-coverage -c "$c_source_file" -o "coverage_reports/${test_name}_source.o" 2>/dev/null
+                
+                # Compile and link test with C object
+                if g++ -std=c++11 -fprofile-arcs -ftest-coverage -pthread "$test_file" "coverage_reports/${test_name}_source.o" -lgtest -lgtest_main -o "coverage_reports/${test_name}_test" 2>/dev/null; then
+                  echo "✅ Compilation successful for $test_file"
+                else
+                  echo "⚠️  Compilation failed for $test_file (GTest linking issue)"
+                  continue
+                fi
+              else
+                # Fallback to original compilation for other tests
+                if g++ -std=c++11 -fprofile-arcs -ftest-coverage -pthread "$test_file" -lgtest -lgtest_main -o "coverage_reports/${test_name}_test" 2>/dev/null; then
+                  echo "✅ Compilation successful for $test_file"
+                else
+                  echo "⚠️  Compilation failed for $test_file (missing dependencies)"
+                  continue
+                fi
+              fi
+              
+              # Run the test (if it compiles and runs)
+              cd coverage_reports
+              if ./"${test_name}_test" 2>/dev/null; then
+                echo "✅ Test execution successful"
+                
+                # Generate coverage data
+                gcov "../$test_file" 2>/dev/null || true
+                
+                # Check if .gcov files were generated
+                if ls *.gcov 1> /dev/null 2>&1; then
+                  echo "✅ Coverage data generated"
+                  
+                  # Parse coverage for the source files being tested
+                  for gcov_file in *.gcov; do
+                    if [ -f "$gcov_file" ]; then
+                      # Extract coverage percentage
+                      lines_total=$(grep -c ":" "$gcov_file" 2>/dev/null || echo "0")
+                      lines_executed=$(grep -c "    [0-9]" "$gcov_file" 2>/dev/null || echo "0")
+                      
+                      if [ "$lines_total" -gt 0 ]; then
+                        coverage_percent=$(awk "BEGIN {printf \"%.1f\", ($lines_executed/$lines_total)*100}")
+                        echo "Coverage for $gcov_file: $coverage_percent% ($lines_executed/$lines_total lines)"
+                        echo "$test_file,$gcov_file,$coverage_percent,$lines_executed,$lines_total" >> ../coverage_summary.txt
+                        covered_files=$((covered_files + 1))
+                      fi
+                    fi
+                  done
+                else
+                  echo "⚠️  No coverage data generated for $test_file"
+                fi
+              else
+                echo "⚠️  Test execution failed for $test_file"
+              fi
+              cd ..
               
               total_files=$((total_files + 1))
             else

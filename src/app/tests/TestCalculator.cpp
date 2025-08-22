@@ -1,36 +1,6 @@
 #include <gtest/gtest.h>
 #include "../../../calculator.h"
 
-// Include the implementation (without main function)
-extern "C" {
-    int add(int a, int b) {
-        return a + b;
-    }
-
-    int subtract(int a, int b) {
-        return a - b;
-    }
-
-    int multiply(int a, int b) {
-        return a * b;
-    }
-
-    int divide(int a, int b) {
-        if (b == 0) {
-            return 0; // Simple error handling
-        }
-        return a / b;
-    }
-
-    int is_even(int n) {
-        return (n % 2) == 0;
-    }
-
-    int max(int a, int b) {
-        return (a > b) ? a : b;
-    }
-}
-
 class CalculatorValidation : public ::testing::Test {
 protected:
     void SetUp() override {
