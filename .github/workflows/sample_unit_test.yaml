@@ -7,7 +7,7 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
+  pull-requests: write
   actions: read
 
 jobs:
@@ -344,6 +344,7 @@ jobs:
       #       || { echo "::error::Code coverage (${PCT}%) is below required threshold ($REQUIRED_COVERAGE%)"; exit 1; }
 
       - name: "Build & Run Tests with Coverage (filter to changed files)"
+        id: coverage
         env:
           REQUIRED_COVERAGE: ${{ needs.analyze-pr-changes.outputs.required-coverage }}
           TEST_FILES: ${{ needs.find-and-validate-tests.outputs.test-files }}
@@ -354,6 +355,7 @@ jobs:
 
           if [ -z "$TEST_FILES" ]; then
             echo "No test files found - skipping coverage analysis"
+            echo "actual-coverage=0" >> $GITHUB_OUTPUT
             exit 0
           fi
 
@@ -458,10 +460,55 @@ jobs:
           PCT=$(grep -Eo 'lines:\s*[0-9.]+%' coverage_summary.txt | tail -1 | tr -dc '0-9.')
           PCT=${PCT:-0}
           echo "Average Coverage (changed files): ${PCT}%"
+          
+          # Store coverage for PR comment
+          echo "actual-coverage=$PCT" >> $GITHUB_OUTPUT
+          
           awk -v p="$PCT" -v r="$REQUIRED_COVERAGE" 'BEGIN { if (p+0 < r+0) exit 1 }' \
             || { echo "::error::Code coverage (${PCT}%) is below required threshold ($REQUIRED_COVERAGE%)"; exit 1; }
 
-      # (Optional) Post a PR comment can be added later when you switch permissions:
-      # pull-requests: write
-      # and use actions/github-script to post validation & coverage summary.
+      - name: "Post Code Coverage Comment on PR"
+        if: always() # Ensure this runs even if the previous steps fail
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const requiredCoverage = '${{ needs.analyze-pr-changes.outputs.required-coverage }}';
+            const actualCoverage = '${{ steps.coverage.outputs.actual-coverage }}';
+            const totalChanges = '${{ needs.analyze-pr-changes.outputs.total-changes }}';
+            const cppFiles = '${{ needs.analyze-pr-changes.outputs.cpp-files }}';
+            const testFiles = '${{ needs.find-and-validate-tests.outputs.test-files }}';
+            const filesWithTests = '${{ needs.find-and-validate-tests.outputs.files-with-tests }}';
+            
+            const coverageStatus = parseFloat(actualCoverage) >= parseFloat(requiredCoverage) ? '✅' : '❌';
+            const coverageEmoji = parseFloat(actualCoverage) >= parseFloat(requiredCoverage) ? '🎯' : '⚠️';
+            
+            const changedFilesList = cppFiles ? cppFiles.split(',').map(f => '- `' + f + '`').join('\n') : 'None';
+            const testFilesList = testFiles ? testFiles.split(',').map(f => '- `' + f + '`').join('\n') : 'None found';
+            
+            const passedMessage = '🎉 **Great job!** Your code coverage meets the requirements.';
+            const failedMessage = '📝 **Action Required**: Code coverage is below the required threshold of ' + requiredCoverage + '%. Please add more tests or improve existing ones.';
+            const finalMessage = parseFloat(actualCoverage) >= parseFloat(requiredCoverage) ? passedMessage : failedMessage;
+
+            const commentBody = '## ' + coverageEmoji + ' Code Coverage Report\n\n' +
+              '### Coverage Summary\n' +
+              '- **Required Coverage**: ' + requiredCoverage + '%\n' +
+              '- **Actual Coverage**: ' + actualCoverage + '%\n' +
+              '- **Status**: ' + coverageStatus + ' ' + (parseFloat(actualCoverage) >= parseFloat(requiredCoverage) ? 'PASSED' : 'FAILED') + '\n\n' +
+              '### PR Analysis\n' +
+              '- **Total C/C++ Lines Added**: ' + totalChanges + '\n' +
+              '- **Files with Existing Tests**: ' + filesWithTests + '\n\n' +
+              '### Changed Files\n' +
+              changedFilesList + '\n\n' +
+              '### Test Files Found\n' +
+              testFilesList + '\n\n' +
+              '---\n' +
+              finalMessage;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: commentBody,
+            });
 
