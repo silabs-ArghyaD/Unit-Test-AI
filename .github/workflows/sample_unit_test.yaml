@@ -197,25 +197,6 @@ jobs:
             echo "test-files=" >> $GITHUB_OUTPUT
           fi
 
-      # ------------------------------------------------------------
-      # AI-powered validation is intentionally kept commented out.
-      # Ensure validate_tests.py and ValidationTemplate.md are present
-      # at the repo root before enabling.
-      #
-      # - name: "Run Unit Test Validator with AI"
-      #   if: steps.mapping.outputs.test-files != ''
-      #   env:
-      #     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      #   run: |
-      #     set -euo pipefail
-      #     echo "=== Running AI-Powered Unit Test Validation ==="
-      #     echo "${{ steps.mapping.outputs.test-files }}" | tr ',' '\n' > test_files_list.txt
-      #     python validate_tests.py --test-files test_files_list.txt --output validation_report.md
-      #     echo "=== VALIDATION COMPLETE ==="
-      #     echo "=== VALIDATION SUMMARY ==="
-      #     awk '/^## Summary/{flag=1;print;next}/^$/{if(flag){exit}}flag' validation_report.md || true
-      # ------------------------------------------------------------
-
   code-coverage-analysis:
     name: "Code Coverage Analysis"
     runs-on: ubuntu-latest
@@ -389,8 +370,8 @@ jobs:
               base=$(basename "$inc" .h)
               echo "Looking for ${base}.c or ${base}.cpp..."
               # Look for corresponding .c or .cpp file
-              c_file=$(find .. -name "${base}.c" -type f | head -n1 || true)
-              cpp_file=$(find .. -name "${base}.cpp" -type f | head -n1 || true)
+              c_file=$(find ../.. -name "${base}.c" -type f | head -n1 || true)
+              cpp_file=$(find ../.. -name "${base}.cpp" -type f | head -n1 || true)
               
               if [ -n "$c_file" ] && [ -f "$c_file" ]; then
                 srcs="$srcs $c_file"
