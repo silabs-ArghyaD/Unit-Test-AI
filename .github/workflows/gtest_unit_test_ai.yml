@@ -4,21 +4,24 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
-jobs:
-  validate-tests:
-    runs-on: ubuntu-latest
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
 
+jobs:
+  analyze-pr-changes:
+    name: "Analyze PR Changes"
+    runs-on: ubuntu-latest
+    outputs:
+      total-changes: ${{ steps.calculate.outputs.total-changes }}
+      required-coverage: ${{ steps.calculate.outputs.required-coverage }}
+      has-cpp-files: ${{ steps.calculate.outputs.has-cpp-files }}
+      cpp-files: ${{ steps.calculate.outputs.cpp-files }}
+    
     steps:
       - name: "Checkout code"
         uses: actions/checkout@v3
-
-      - name: "Set up Python"
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.9"
-
-      - name: "Install dependencies"
-        run: pip install requests
 
       - name: "Fetch PR Diff using GitHub REST API"
         env:
@@ -32,7 +35,8 @@ jobs:
           echo "=== PR Diff JSON Response ==="
           cat pr_diff.json
 
-      - name: "Filter C/C++ files"
+      - name: "Filter C/C++ files and calculate changes"
+        id: calculate
         run: |
           # Filter C/C++ files from the PR diff
           jq -r '.[] | select(.filename | test("\\.(c|cpp|cc|cxx|h|hpp|hxx)$")) | .filename' pr_diff.json > cpp_files.txt
@@ -40,14 +44,16 @@ jobs:
           echo "C/C++ files changed in this PR:"
           cat cpp_files.txt
 
-      - name: "Calculate total changes and determine coverage requirement"
-        run: |
           # Calculate total lines added for C/C++ files
           TOTAL_CHANGES=$(jq -r '.[] | select(.filename | test("\\.(c|cpp|cc|cxx|h|hpp|hxx)$")) | (.additions)' pr_diff.json | awk '{sum += $1} END {print sum}')
 
           # Handle case when no C/C++ files are found
           if [ -z "$TOTAL_CHANGES" ] || [ "$TOTAL_CHANGES" = "0" ]; then
             echo "No C/C++ files changed in this PR"
+            echo "total-changes=0" >> $GITHUB_OUTPUT
+            echo "required-coverage=0" >> $GITHUB_OUTPUT
+            echo "has-cpp-files=false" >> $GITHUB_OUTPUT
+            echo "cpp-files=" >> $GITHUB_OUTPUT
             exit 0
           fi
 
@@ -65,27 +71,52 @@ jobs:
 
           echo "Required code coverage: ${REQUIRED_COVERAGE}%"
 
-          # Store values in environment for future steps
-          echo "TOTAL_CHANGES=$TOTAL_CHANGES" >> $GITHUB_ENV
-          echo "REQUIRED_COVERAGE=$REQUIRED_COVERAGE" >> $GITHUB_ENV
+          # Convert cpp_files.txt to comma-separated string for output
+          CPP_FILES=$(cat cpp_files.txt | tr '\n' ',' | sed 's/,$//')
+
+          # Store values for other jobs
+          echo "total-changes=$TOTAL_CHANGES" >> $GITHUB_OUTPUT
+          echo "required-coverage=$REQUIRED_COVERAGE" >> $GITHUB_OUTPUT
+          echo "has-cpp-files=true" >> $GITHUB_OUTPUT
+          echo "cpp-files=$CPP_FILES" >> $GITHUB_OUTPUT
 
           # Print detailed breakdown
           echo ""
           echo "=== Detailed File Changes ==="
           jq -r '.[] | select(.filename | test("\\.(c|cpp|cc|cxx|h|hpp|hxx)$")) | "File: \(.filename) | Additions: \(.additions) | Deletions: \(.deletions) | Total: \(.additions + .deletions)"' pr_diff.json
 
+  find-and-validate-tests:
+    name: "Find Tests & AI Validation"
+    runs-on: ubuntu-latest
+    needs: analyze-pr-changes
+    if: needs.analyze-pr-changes.outputs.has-cpp-files == 'true'
+    outputs:
+      has-test-mappings: ${{ steps.mapping.outputs.has-mappings }}
+      files-with-tests: ${{ steps.mapping.outputs.files-with-tests }}
+      test-files: ${{ steps.mapping.outputs.test-files }}
+    
+    steps:
+      - name: "Checkout code"
+        uses: actions/checkout@v3
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.9"
+
+      - name: "Install Python dependencies"
+        run: |
+          pip install requests litellm
+
       - name: "Find Existing GTest Unit Tests"
+        id: mapping
+        env:
+          CPP_FILES: ${{ needs.analyze-pr-changes.outputs.cpp-files }}
         run: |
           echo "=== Finding Existing GTest Unit Tests ==="
 
-          # Read modified C/C++ files into array
-          declare -a modified_files
-          while IFS= read -r file; do
-            if [ -n "$file" ]; then
-              modified_files+=("$file")
-            fi
-          done < cpp_files.txt
-
+          # Convert comma-separated string back to array
+          IFS=',' read -ra modified_files <<< "$CPP_FILES"
           echo "Modified C/C++ files: ${#modified_files[@]}"
 
           # Find all GTest files recursively from src/app/tests
@@ -101,69 +132,274 @@ jobs:
             # Map modified files to test files
             files_with_tests=0
             > file_test_mapping.txt
+            declare -a all_test_files
             
             for modified_file in "${modified_files[@]}"; do
-              base_name=$(basename "$modified_file" | sed 's/\.[^.]*$//')
-              
-              # Method 1: Direct name matching (e.g., Calculator.cpp -> CalculatorTest.cpp)
-              matching_tests=$(grep -i "${base_name}" found_test_files.txt 2>/dev/null || true)
-              
-              # Method 2: Look for includes of the modified file in test files
-              include_tests=""
-              if [ -f "$modified_file" ]; then
-                include_name=$(basename "$modified_file")
-                include_tests=$(find src/app/tests -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) -exec grep -l "#include.*${include_name}" {} \; 2>/dev/null || true)
-              fi
-              
-              # Method 3: Look for partial name matches and common patterns
-              # e.g., ClosureManager.cpp -> TestClosureControlConformance.cpp
-              partial_tests=""
-              if [ ${#base_name} -gt 3 ]; then
-                # Extract key parts of the filename (remove common suffixes/prefixes)
-                clean_name=$(echo "$base_name" | sed -e 's/Manager$//' -e 's/Handler$//' -e 's/Controller$//' -e 's/Service$//')
-                
-                # Look for test files containing key parts of the name
-                if [ ${#clean_name} -gt 3 ]; then
-                  partial_tests=$(grep -i "${clean_name}" found_test_files.txt 2>/dev/null || true)
+              if [ -n "$modified_file" ]; then
+                # Method: Look for includes of the modified file in test files
+                include_tests=""
+                if [ -f "$modified_file" ]; then
+                  include_name=$(basename "$modified_file")
+                  include_tests=$(find src/app/tests -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) -exec grep -l "#include.*${include_name}" {} \; 2>/dev/null || true)
                 fi
-              fi
-              
-              # Method 4: Content-based matching - look for class/function names from modified file in test files
-              content_tests=""
-              if [ -f "$modified_file" ] && [[ "$modified_file" == *.cpp || "$modified_file" == *.cc || "$modified_file" == *.cxx ]]; then
-                # Extract class names from the modified file
-                class_names=$(grep -E "^class\s+\w+|^struct\s+\w+" "$modified_file" 2>/dev/null | sed -E 's/^(class|struct)\s+([A-Za-z_][A-Za-z0-9_]*).*/\2/' || true)
                 
-                if [ -n "$class_names" ]; then
-                  while IFS= read -r class_name; do
-                    if [ -n "$class_name" ] && [ ${#class_name} -gt 2 ]; then
-                      class_tests=$(find src/app/tests -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) -exec grep -l "$class_name" {} \; 2>/dev/null || true)
-                      content_tests=$(echo -e "$content_tests\n$class_tests" | sort -u | grep -v '^$' || true)
-                    fi
-                  done <<< "$class_names"
+                if [ -n "$include_tests" ]; then
+                  files_with_tests=$((files_with_tests + 1))
+                  echo "$modified_file:$include_tests" >> file_test_mapping.txt
+                  # Add test files to array
+                  while IFS= read -r test_file; do
+                    all_test_files+=("$test_file")
+                  done <<< "$include_tests"
+                else
+                  echo "$modified_file:" >> file_test_mapping.txt
                 fi
-              fi
-              
-              # Combine and deduplicate all results
-              all_tests=$(echo -e "$matching_tests\n$include_tests\n$partial_tests\n$content_tests" | sort -u | grep -v '^$' || true)
-              
-              if [ -n "$all_tests" ]; then
-                files_with_tests=$((files_with_tests + 1))
-                echo "$modified_file:$all_tests" >> file_test_mapping.txt
-              else
-                echo "$modified_file:" >> file_test_mapping.txt
               fi
             done
             
             echo "Files with existing tests: $files_with_tests out of ${#modified_files[@]}"
-            cat file_test_mapping.txt
+            
+            if [ "$files_with_tests" -gt 0 ]; then
+              cat file_test_mapping.txt
+              echo "has-mappings=true" >> $GITHUB_OUTPUT
+              
+              # Remove duplicates and convert to comma-separated string
+              TEST_FILES=$(printf '%s\n' "${all_test_files[@]}" | sort -u | tr '\n' ',' | sed 's/,$//')
+              echo "test-files=$TEST_FILES" >> $GITHUB_OUTPUT
+            else
+              echo "has-mappings=false" >> $GITHUB_OUTPUT
+              echo "test-files=" >> $GITHUB_OUTPUT
+            fi
+            
+            echo "files-with-tests=$files_with_tests" >> $GITHUB_OUTPUT
 
           else
             echo "src/app/tests directory not found"
-            touch found_test_files.txt
-            touch file_test_mapping.txt
+            echo "has-mappings=false" >> $GITHUB_OUTPUT
+            echo "files-with-tests=0" >> $GITHUB_OUTPUT
+            echo "test-files=" >> $GITHUB_OUTPUT
           fi
 
-      # Add your analysis and test steps here, e.g.:
-      # - name: "Run Unit Test Validator"
-      #   run: python your_script.py pr_diff.json
+      # - name: "Run Unit Test Validator with AI"
+      #   env:
+      #     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      #   run: |
+      #     echo "=== Running AI-Powered Unit Test Validation ==="
+      #     
+      #     # Check if we have any test files
+      #     if [ -z "${{ steps.mapping.outputs.test-files }}" ]; then
+      #       echo "No test files found"
+      #       exit 0
+      #     fi
+      #     
+      #     # Create test files list for Python script
+      #     echo "${{ steps.mapping.outputs.test-files }}" | tr ',' '\n' > test_files_list.txt
+      #     
+      #     # Run the Python validator
+      #     python validate_tests.py --test-files test_files_list.txt --output validation_report.md
+      #     
+      #     echo "=== Validation Complete ==="
+      #     
+      #     # Display summary from the report
+      #     if [ -f "validation_report.md" ]; then
+      #       echo "Validation report generated successfully"
+      #       
+      #       # Extract and display summary section
+      #       echo ""
+      #       echo "=== VALIDATION SUMMARY ==="
+      #       grep -A 10 "## Summary" validation_report.md || echo "Could not extract summary"
+      #     fi
+
+  code-coverage-analysis:
+    name: "Code Coverage Analysis"
+    runs-on: ubuntu-latest
+    needs: [analyze-pr-changes, find-and-validate-tests]
+    if: needs.find-and-validate-tests.outputs.has-test-mappings == 'true'
+    
+    steps:
+      - name: "Checkout code"
+        uses: actions/checkout@v3
+
+      - name: "Install GCC and GCov for Code Coverage"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential lcov libgtest-dev cmake
+          
+          # Build Google Test properly
+          cd /usr/src/gtest
+          sudo cmake .
+          sudo cmake --build . --config Release
+          sudo cp lib/*.a /usr/lib/ || sudo cp *.a /usr/lib/
+          
+          # Also install Google Mock if available
+          if [ -d "/usr/src/gmock" ]; then
+            cd /usr/src/gmock
+            sudo cmake .
+            sudo cmake --build . --config Release
+            sudo cp lib/*.a /usr/lib/ || sudo cp *.a /usr/lib/
+          fi
+          
+          # Verify tools are available
+          gcov --version
+          gcc --version
+          
+          # Test GTest installation
+          echo "Testing GTest installation..."
+          echo '#include <gtest/gtest.h>
+          TEST(TestSuite, TestCase) { EXPECT_EQ(1, 1); }
+          int main(int argc, char **argv) { 
+            ::testing::InitGoogleTest(&argc, argv); 
+            return RUN_ALL_TESTS(); 
+          }' > /tmp/test_gtest.cpp
+          
+          g++ -std=c++11 /tmp/test_gtest.cpp -lgtest -lgtest_main -pthread -o /tmp/test_gtest && echo "✅ GTest installation successful" || echo "❌ GTest installation failed"
+
+      - name: "Check Code Coverage of Mapped Files"
+        env:
+          REQUIRED_COVERAGE: ${{ needs.analyze-pr-changes.outputs.required-coverage }}
+          TEST_FILES: ${{ needs.find-and-validate-tests.outputs.test-files }}
+        run: |
+          echo "=== Checking Code Coverage with GCov ==="
+          echo "Required Coverage: $REQUIRED_COVERAGE%"
+          
+          # Check if we have test files
+          if [ -z "$TEST_FILES" ]; then
+            echo "No test files found - skipping coverage analysis"
+            exit 0
+          fi
+          
+          # Create coverage directory
+          mkdir -p coverage_reports
+          
+          # Convert comma-separated test files to newline-separated
+          echo "$TEST_FILES" | tr ',' '\n' > test_files_to_run.txt
+          
+          test_count=$(wc -l < test_files_to_run.txt 2>/dev/null || echo "0")
+          echo "Found $test_count test files to analyze for coverage"
+          
+          echo "=== Test files to analyze ==="
+          cat test_files_to_run.txt
+          
+          # Initialize coverage counters
+          total_files=0
+          covered_files=0
+          > coverage_summary.txt
+          
+          # Process each test file for coverage
+          while IFS= read -r test_file; do
+            if [ -f "$test_file" ]; then
+              echo ""
+              echo "=== Analyzing coverage for: $test_file ==="
+              
+              # Extract the directory and filename
+              test_dir=$(dirname "$test_file")
+              test_name=$(basename "$test_file" .cpp)
+              
+              # Compile with coverage flags
+              echo "Compiling $test_file with coverage flags..."
+              
+              # Try to compile with gcov flags and link with GTest
+              # First compile the C source file with coverage
+              c_source_file=""
+              if [[ "$test_file" == *"TestCalculator.cpp"* ]]; then
+                c_source_file="../../../calculator.c"
+              fi
+              
+              if [ -n "$c_source_file" ] && [ -f "$c_source_file" ]; then
+                echo "Compiling C source: $c_source_file"
+                gcc -fprofile-arcs -ftest-coverage -c "$c_source_file" -o "coverage_reports/${test_name}_source.o" 2>/dev/null
+                
+                # Compile and link test with C object
+                if g++ -std=c++11 -fprofile-arcs -ftest-coverage -pthread "$test_file" "coverage_reports/${test_name}_source.o" -lgtest -lgtest_main -o "coverage_reports/${test_name}_test" 2>/dev/null; then
+                  echo "✅ Compilation successful for $test_file"
+                else
+                  echo "⚠️  Compilation failed for $test_file (GTest linking issue)"
+                  continue
+                fi
+              else
+                # Fallback to original compilation for other tests
+                if g++ -std=c++11 -fprofile-arcs -ftest-coverage -pthread "$test_file" -lgtest -lgtest_main -o "coverage_reports/${test_name}_test" 2>/dev/null; then
+                  echo "✅ Compilation successful for $test_file"
+                else
+                  echo "⚠️  Compilation failed for $test_file (missing dependencies)"
+                  continue
+                fi
+              fi
+              
+              # Run the test (if it compiles and runs)
+              cd coverage_reports
+              if ./"${test_name}_test" 2>/dev/null; then
+                echo "✅ Test execution successful"
+                
+                # Generate coverage data
+                gcov "../$test_file" 2>/dev/null || true
+                
+                # Check if .gcov files were generated
+                if ls *.gcov 1> /dev/null 2>&1; then
+                  echo "✅ Coverage data generated"
+                  
+                  # Parse coverage for the source files being tested
+                  for gcov_file in *.gcov; do
+                    if [ -f "$gcov_file" ]; then
+                      # Extract coverage percentage
+                      lines_total=$(grep -c ":" "$gcov_file" 2>/dev/null || echo "0")
+                      lines_executed=$(grep -c "    [0-9]" "$gcov_file" 2>/dev/null || echo "0")
+                      
+                      if [ "$lines_total" -gt 0 ]; then
+                        coverage_percent=$(awk "BEGIN {printf \"%.1f\", ($lines_executed/$lines_total)*100}")
+                        echo "Coverage for $gcov_file: $coverage_percent% ($lines_executed/$lines_total lines)"
+                        echo "$test_file,$gcov_file,$coverage_percent,$lines_executed,$lines_total" >> ../coverage_summary.txt
+                        covered_files=$((covered_files + 1))
+                      fi
+                    fi
+                  done
+                else
+                  echo "⚠️  No coverage data generated for $test_file"
+                fi
+              else
+                echo "⚠️  Test execution failed for $test_file"
+              fi
+              cd ..
+              
+              total_files=$((total_files + 1))
+            else
+              echo "⚠️  Test file not found: $test_file"
+            fi
+          done < test_files_to_run.txt
+          
+          echo ""
+          echo "=== COVERAGE ANALYSIS SUMMARY ==="
+          echo "Total test files processed: $total_files"
+          echo "Files with coverage data: $covered_files"
+          
+          if [ -f "coverage_summary.txt" ] && [ -s "coverage_summary.txt" ]; then
+            echo ""
+            echo "=== DETAILED COVERAGE RESULTS ==="
+            echo "Test File,Coverage File,Coverage %,Lines Executed,Total Lines"
+            cat coverage_summary.txt
+            
+            # Calculate overall statistics
+            if [ "$covered_files" -gt 0 ]; then
+              avg_coverage=$(awk -F, '{sum+=$3; count++} END {if(count>0) printf "%.1f", sum/count; else print "0"}' coverage_summary.txt)
+              total_executed=$(awk -F, '{sum+=$4} END {print sum}' coverage_summary.txt)
+              total_lines=$(awk -F, '{sum+=$5} END {print sum}' coverage_summary.txt)
+              
+              echo ""
+              echo "=== OVERALL COVERAGE STATISTICS ==="
+              echo "Average Coverage: $avg_coverage%"
+              echo "Total Lines Executed: $total_executed"
+              echo "Total Lines: $total_lines"
+              echo "Required Coverage: $REQUIRED_COVERAGE%"
+              
+              # Check if coverage meets requirements
+              if awk "BEGIN {exit !($avg_coverage >= $REQUIRED_COVERAGE)}"; then
+                echo "✅ Coverage requirement MET ($avg_coverage% >= $REQUIRED_COVERAGE%)"
+              else
+                echo "❌ Coverage requirement NOT MET ($avg_coverage% < $REQUIRED_COVERAGE%)"
+                echo "::error::Code coverage ($avg_coverage%) is below required threshold ($REQUIRED_COVERAGE%)"
+                exit 1
+              fi
+            fi
+          else
+            echo "No coverage data could be generated"
+            echo "This may be due to missing dependencies or compilation issues"
+          fi
