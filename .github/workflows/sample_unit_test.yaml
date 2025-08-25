@@ -542,7 +542,7 @@ jobs:
             const filesWithTests = '${{ needs.find-and-validate-tests.outputs.files-with-tests }}';
             
             const coverageStatus = parseFloat(actualCoverage) >= parseFloat(requiredCoverage) ? '✅' : '❌';
-            const coverageEmoji = parseFloat(actualCoverage) >= parseFloat(requiredCoverage) ? '🎯' : '⚠️';
+            // const coverageEmoji = parseFloat(actualCoverage) >= parseFloat(requiredCoverage) ? '🎯' : '⚠️';
             
             const changedFilesList = cppFiles ? cppFiles.split(',').map(f => `- \`${f.trim()}\``).join('\n') : '- None';
             const testFilesList = testFiles ? testFiles.split(',').map(f => `- \`${f.trim()}\``).join('\n') : '- None found';
@@ -552,7 +552,7 @@ jobs:
             const finalMessage = parseFloat(actualCoverage) >= parseFloat(requiredCoverage) ? passedMessage : failedMessage;
 
             const commentBody = [
-              `## ${coverageEmoji} Code Coverage Report`,
+              `## Code Coverage Report`,
               '',
               '### Coverage Summary',
               `- **Required Coverage**: ${requiredCoverage}%`,
