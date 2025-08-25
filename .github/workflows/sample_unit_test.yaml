@@ -468,7 +468,7 @@ jobs:
             || { echo "::error::Code coverage (${PCT}%) is below required threshold ($REQUIRED_COVERAGE%)"; exit 1; }
 
       - name: "Post Code Coverage Comment on PR"
-        if: always() # Ensure this runs even if the previous steps fail
+        if: always()
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
