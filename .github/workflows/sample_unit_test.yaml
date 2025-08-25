@@ -379,34 +379,27 @@ jobs:
             test_name=$(basename "$tf")
             exe_name="${test_name%.*}"
 
-            # Smart source file detection based on test file name and includes
+            # Generic source file detection based on includes in the test file
             srcs=""
-            
-            # Method 1: If test file is TestCalculator.cpp, look for calculator.c
-            if [[ "$test_name" == "TestCalculator.cpp" ]]; then
-              if [ -f "../calculator.c" ]; then
-                srcs="../calculator.c"
-                echo "Found specific source for $test_name: $srcs"
+            echo "Looking for includes in $tf..."
+            includes=$(grep -oE '#include *["<][^">]+\.h' "../$tf" | sed 's/#include *["<]//' | sed 's/"//' || true)
+            echo "Found includes: $includes"
+            for inc in $includes; do
+              [ -z "$inc" ] && continue
+              base=$(basename "$inc" .h)
+              echo "Looking for ${base}.c or ${base}.cpp..."
+              # Look for corresponding .c or .cpp file
+              c_file=$(find .. -name "${base}.c" -type f | head -n1 || true)
+              cpp_file=$(find .. -name "${base}.cpp" -type f | head -n1 || true)
+              
+              if [ -n "$c_file" ] && [ -f "$c_file" ]; then
+                srcs="$srcs $c_file"
+                echo "Found C source: $c_file"
+              elif [ -n "$cpp_file" ] && [ -f "$cpp_file" ]; then
+                srcs="$srcs $cpp_file"
+                echo "Found C++ source: $cpp_file"
               fi
-            fi
-            
-            # Method 2: Generic approach - look for includes in the test file
-            if [ -z "$srcs" ]; then
-              echo "Looking for includes in $tf..."
-              includes=$(grep -oE '#include *["<][^">]+\.h' "../$tf" | sed 's/#include *["<]//' | sed 's/"//' || true)
-              echo "Found includes: $includes"
-              for inc in $includes; do
-                [ -z "$inc" ] && continue
-                base=$(basename "$inc" .h)
-                echo "Looking for ${base}.c..."
-                # Look for corresponding .c file
-                c_file=$(find .. -name "${base}.c" -type f | head -n1 || true)
-                if [ -n "$c_file" ] && [ -f "$c_file" ]; then
-                  srcs="$srcs $c_file"
-                  echo "Found source: $c_file"
-                fi
-              done
-            fi
+            done
 
             echo "Source files to link: $srcs"
 
