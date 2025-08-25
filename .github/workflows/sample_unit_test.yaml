@@ -507,28 +507,36 @@ jobs:
             const coverageStatus = parseFloat(actualCoverage) >= parseFloat(requiredCoverage) ? '✅' : '❌';
             const coverageEmoji = parseFloat(actualCoverage) >= parseFloat(requiredCoverage) ? '🎯' : '⚠️';
             
-            const changedFilesList = cppFiles ? cppFiles.split(',').map(f => '- `' + f.trim() + '`').join('\\n') : '- None';
-            const testFilesList = testFiles ? testFiles.split(',').map(f => '- `' + f.trim() + '`').join('\\n') : '- None found';
+            const changedFilesList = cppFiles ? cppFiles.split(',').map(f => `- \`${f.trim()}\``).join('\n') : '- None';
+            const testFilesList = testFiles ? testFiles.split(',').map(f => `- \`${f.trim()}\``).join('\n') : '- None found';
             
             const passedMessage = '🎉 **Great job!** Your code coverage meets the requirements.';
-            const failedMessage = '📝 **Action Required**: Code coverage is below the required threshold of ' + requiredCoverage + '%. Please add more tests or improve existing ones.';
+            const failedMessage = `📝 **Action Required**: Code coverage is below the required threshold of ${requiredCoverage}%. Please add more tests or improve existing ones.`;
             const finalMessage = parseFloat(actualCoverage) >= parseFloat(requiredCoverage) ? passedMessage : failedMessage;
 
-            const commentBody = '## ' + coverageEmoji + ' Code Coverage Report\\n\\n' +
-              '### Coverage Summary\\n' +
-              '- **Required Coverage**: ' + requiredCoverage + '%\\n' +
-              '- **Actual Coverage**: ' + actualCoverage + '%\\n' +
-              '- **Status**: ' + coverageStatus + ' ' + (parseFloat(actualCoverage) >= parseFloat(requiredCoverage) ? 'PASSED' : 'FAILED') + '\\n\\n' +
-              '### PR Analysis\\n' +
-              '- **Total C/C++ Lines Added**: ' + totalChanges + '\\n' +
-              '- **Files with Existing Tests**: ' + filesWithTests + '\\n\\n' +
-              '### Changed Files\\n' +
-              changedFilesList + '\\n\\n' +
-              '### Test Files Found\\n' +
-              testFilesList + '\\n\\n' +
-              '---\\n' +
-              finalMessage + '\\n\\n' +
-              '*This comment will be updated automatically on each push.*';
+            const commentBody = [
+              `## ${coverageEmoji} Code Coverage Report`,
+              '',
+              '### Coverage Summary',
+              `- **Required Coverage**: ${requiredCoverage}%`,
+              `- **Actual Coverage**: ${actualCoverage}%`,
+              `- **Status**: ${coverageStatus} ${parseFloat(actualCoverage) >= parseFloat(requiredCoverage) ? 'PASSED' : 'FAILED'}`,
+              '',
+              '### PR Analysis',
+              `- **Total C/C++ Lines Added**: ${totalChanges}`,
+              `- **Files with Existing Tests**: ${filesWithTests}`,
+              '',
+              '### Changed Files',
+              changedFilesList,
+              '',
+              '### Test Files Found',
+              testFilesList,
+              '',
+              '---',
+              finalMessage,
+              '',
+              '*This comment will be updated automatically on each push.*'
+            ].join('\n');
 
             // Post the new comment
             await github.rest.issues.createComment({
