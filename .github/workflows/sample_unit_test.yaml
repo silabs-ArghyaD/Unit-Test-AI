@@ -350,12 +350,16 @@ jobs:
           TEST_FILES: ${{ needs.find-and-validate-tests.outputs.test-files }}
           CPP_FILES: ${{ needs.analyze-pr-changes.outputs.cpp-files }}
         run: |
-          set -euo pipefail
+          echo "=== DEBUG: Input Variables ==="
           echo "Required Coverage: $REQUIRED_COVERAGE%"
+          echo "Test Files: $TEST_FILES"
+          echo "CPP Files: $CPP_FILES"
+
+          # Initialize coverage output early to prevent undefined errors
+          echo "actual-coverage=0" >> $GITHUB_OUTPUT
 
           if [ -z "$TEST_FILES" ]; then
             echo "No test files found - skipping coverage analysis"
-            echo "actual-coverage=0" >> $GITHUB_OUTPUT
             exit 0
           fi
 
@@ -388,14 +392,18 @@ jobs:
             
             # Method 2: Generic approach - look for includes in the test file
             if [ -z "$srcs" ]; then
+              echo "Looking for includes in $tf..."
               includes=$(grep -oE '#include *["<][^">]+\.h' "../$tf" | sed 's/#include *["<]//' | sed 's/"//' || true)
+              echo "Found includes: $includes"
               for inc in $includes; do
                 [ -z "$inc" ] && continue
                 base=$(basename "$inc" .h)
+                echo "Looking for ${base}.c..."
                 # Look for corresponding .c file
                 c_file=$(find .. -name "${base}.c" -type f | head -n1 || true)
                 if [ -n "$c_file" ] && [ -f "$c_file" ]; then
                   srcs="$srcs $c_file"
+                  echo "Found source: $c_file"
                 fi
               done
             fi
@@ -405,31 +413,33 @@ jobs:
             # Compile test with proper source files
             if [ -n "$srcs" ]; then
               # Compile with source files
-              if g++ -std=c++17 -fprofile-arcs -ftest-coverage -pthread "../$tf" $srcs -lgtest -lgtest_main -o "$exe_name" 2>/dev/null; then
+              echo "Compiling with sources: g++ -std=c++17 -fprofile-arcs -ftest-coverage -pthread ../$tf $srcs -lgtest -lgtest_main -o $exe_name"
+              if g++ -std=c++17 -fprofile-arcs -ftest-coverage -pthread "../$tf" $srcs -lgtest -lgtest_main -o "$exe_name" 2>&1; then
                 echo "✅ Build OK: $tf (with sources: $srcs)"
-                if ./"$exe_name"; then
+                if ./"$exe_name" 2>&1; then
                   echo "✅ Tests passed: $tf"
                   pass_count=$((pass_count+1))
                 else
-                  echo "⚠️ Tests failed (continuing): $tf"
+                  echo "⚠️ Tests failed but continuing: $tf"
                 fi
               else
-                echo "⚠️ Build failed with sources (continuing): $tf"
+                echo "❌ Build failed with sources: $tf"
                 fail_count=$((fail_count+1))
                 continue
               fi
             else
               # Try to compile without additional sources (self-contained test)
-              if g++ -std=c++17 -fprofile-arcs -ftest-coverage -pthread "../$tf" -lgtest -lgtest_main -o "$exe_name" 2>/dev/null; then
+              echo "Trying self-contained compilation..."
+              if g++ -std=c++17 -fprofile-arcs -ftest-coverage -pthread "../$tf" -lgtest -lgtest_main -o "$exe_name" 2>&1; then
                 echo "✅ Build OK: $tf (self-contained)"
-                if ./"$exe_name"; then
+                if ./"$exe_name" 2>&1; then
                   echo "✅ Tests passed: $tf"
                   pass_count=$((pass_count+1))
                 else
-                  echo "⚠️ Tests failed (continuing): $tf"
+                  echo "⚠️ Tests failed but continuing: $tf"
                 fi
               else
-                echo "⚠️ Build failed - no sources found: $tf"
+                echo "❌ Build failed - no sources found: $tf"
                 fail_count=$((fail_count+1))
                 continue
               fi
@@ -439,33 +449,60 @@ jobs:
           echo ""
           echo "Build summary: pass=$pass_count, fail=$fail_count"
 
+          # Only proceed with coverage if we had at least one successful build
+          if [ "$pass_count" -eq 0 ]; then
+            echo "❌ No tests compiled successfully - cannot generate coverage"
+            echo "actual-coverage=0" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
           # Generate coverage only for changed files
           cd ..
-          # gcovr filter expects paths; prepend repo root to each
-          mapfile -t FILTERS < <(sed "s|^|$(pwd)/|" changed_files.txt)
-          # Create a temporary file with --filter entries (one per line)
-          : > filters.txt
-          for f in "${FILTERS[@]}"; do echo "$f" >> filters.txt; done
-
-          echo "=== Generating coverage (changed files only) ==="
-          # gcovr prints a summary including 'lines: XX.YY%'
-          gcovr --root . --gcov-executable gcov --exclude-unreachable-branches \
-                --txt --filter "$(pwd)" \
-                $(awk '{printf("--filter %s ", $0)}' filters.txt) \
-                > coverage_summary.txt || true
+          echo "=== Generating coverage report ==="
+          
+          # Try gcovr first (preferred)
+          if command -v gcovr >/dev/null 2>&1; then
+            echo "Using gcovr for coverage report..."
+            gcovr --root . --gcov-executable gcov --exclude-unreachable-branches --txt > coverage_summary.txt 2>&1 || true
+          else
+            echo "gcovr not found, trying lcov..."
+            lcov --capture --directory . --output-file coverage.info 2>&1 || true
+            lcov --list coverage.info > coverage_summary.txt 2>&1 || true
+          fi
 
           echo "=== COVERAGE SUMMARY (raw) ==="
-          cat coverage_summary.txt || true
+          cat coverage_summary.txt || echo "No coverage summary generated"
 
-          PCT=$(grep -Eo 'lines:\s*[0-9.]+%' coverage_summary.txt | tail -1 | tr -dc '0-9.')
-          PCT=${PCT:-0}
-          echo "Average Coverage (changed files): ${PCT}%"
+          # Extract coverage percentage with multiple fallback methods
+          PCT=""
           
-          # Store coverage for PR comment
+          # Method 1: gcovr format
+          PCT=$(grep -Eo 'lines:\s*[0-9.]+%' coverage_summary.txt | tail -1 | tr -dc '0-9.' || true)
+          
+          # Method 2: lcov format  
+          if [ -z "$PCT" ]; then
+            PCT=$(grep -Eo '[0-9.]+%' coverage_summary.txt | tail -1 | tr -dc '0-9.' || true)
+          fi
+          
+          # Method 3: TOTAL line format
+          if [ -z "$PCT" ]; then
+            PCT=$(grep -i "TOTAL" coverage_summary.txt | grep -Eo '[0-9.]+%' | tr -dc '0-9.' || true)
+          fi
+          
+          PCT=${PCT:-0}
+          echo "Extracted Coverage: ${PCT}%"
+          
+          # Update the output with actual coverage
           echo "actual-coverage=$PCT" >> $GITHUB_OUTPUT
           
-          awk -v p="$PCT" -v r="$REQUIRED_COVERAGE" 'BEGIN { if (p+0 < r+0) exit 1 }' \
-            || { echo "::error::Code coverage (${PCT}%) is below required threshold ($REQUIRED_COVERAGE%)"; exit 1; }
+          # Check if coverage meets requirement (but don't fail the step - let PR comment show the result)
+          if awk -v p="$PCT" -v r="$REQUIRED_COVERAGE" 'BEGIN { if (p+0 < r+0) exit 1 }'; then
+            echo "✅ Coverage requirement MET (${PCT}% >= $REQUIRED_COVERAGE%)"
+          else
+            echo "❌ Coverage requirement NOT MET (${PCT}% < $REQUIRED_COVERAGE%)"
+            echo "::error::Code coverage (${PCT}%) is below required threshold ($REQUIRED_COVERAGE%)"
+            exit 1
+          fi
 
       - name: "Post Code Coverage Comment on PR"
         if: always()
