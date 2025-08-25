@@ -473,8 +473,32 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
+            const prNumber = context.payload.pull_request.number;
+            const botUserId = 'github-actions[bot]';
+            
+            // Get all comments on the PR
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+            });
+            
+            // Find and delete previous bot comments that contain coverage reports
+            for (const comment of comments) {
+              if (comment.user.login === botUserId && 
+                  comment.body.includes('Code Coverage Report')) {
+                console.log(`Deleting previous coverage comment: ${comment.id}`);
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: comment.id,
+                });
+              }
+            }
+            
+            // Prepare the new coverage comment
             const requiredCoverage = '${{ needs.analyze-pr-changes.outputs.required-coverage }}';
-            const actualCoverage = '${{ steps.coverage.outputs.actual-coverage }}';
+            const actualCoverage = '${{ steps.coverage.outputs.actual-coverage }}' || '0';
             const totalChanges = '${{ needs.analyze-pr-changes.outputs.total-changes }}';
             const cppFiles = '${{ needs.analyze-pr-changes.outputs.cpp-files }}';
             const testFiles = '${{ needs.find-and-validate-tests.outputs.test-files }}';
@@ -483,32 +507,34 @@ jobs:
             const coverageStatus = parseFloat(actualCoverage) >= parseFloat(requiredCoverage) ? '✅' : '❌';
             const coverageEmoji = parseFloat(actualCoverage) >= parseFloat(requiredCoverage) ? '🎯' : '⚠️';
             
-            const changedFilesList = cppFiles ? cppFiles.split(',').map(f => '- `' + f + '`').join('\n') : 'None';
-            const testFilesList = testFiles ? testFiles.split(',').map(f => '- `' + f + '`').join('\n') : 'None found';
+            const changedFilesList = cppFiles ? cppFiles.split(',').map(f => '- `' + f.trim() + '`').join('\\n') : '- None';
+            const testFilesList = testFiles ? testFiles.split(',').map(f => '- `' + f.trim() + '`').join('\\n') : '- None found';
             
             const passedMessage = '🎉 **Great job!** Your code coverage meets the requirements.';
             const failedMessage = '📝 **Action Required**: Code coverage is below the required threshold of ' + requiredCoverage + '%. Please add more tests or improve existing ones.';
             const finalMessage = parseFloat(actualCoverage) >= parseFloat(requiredCoverage) ? passedMessage : failedMessage;
 
-            const commentBody = '## ' + coverageEmoji + ' Code Coverage Report\n\n' +
-              '### Coverage Summary\n' +
-              '- **Required Coverage**: ' + requiredCoverage + '%\n' +
-              '- **Actual Coverage**: ' + actualCoverage + '%\n' +
-              '- **Status**: ' + coverageStatus + ' ' + (parseFloat(actualCoverage) >= parseFloat(requiredCoverage) ? 'PASSED' : 'FAILED') + '\n\n' +
-              '### PR Analysis\n' +
-              '- **Total C/C++ Lines Added**: ' + totalChanges + '\n' +
-              '- **Files with Existing Tests**: ' + filesWithTests + '\n\n' +
-              '### Changed Files\n' +
-              changedFilesList + '\n\n' +
-              '### Test Files Found\n' +
-              testFilesList + '\n\n' +
-              '---\n' +
-              finalMessage;
+            const commentBody = '## ' + coverageEmoji + ' Code Coverage Report\\n\\n' +
+              '### Coverage Summary\\n' +
+              '- **Required Coverage**: ' + requiredCoverage + '%\\n' +
+              '- **Actual Coverage**: ' + actualCoverage + '%\\n' +
+              '- **Status**: ' + coverageStatus + ' ' + (parseFloat(actualCoverage) >= parseFloat(requiredCoverage) ? 'PASSED' : 'FAILED') + '\\n\\n' +
+              '### PR Analysis\\n' +
+              '- **Total C/C++ Lines Added**: ' + totalChanges + '\\n' +
+              '- **Files with Existing Tests**: ' + filesWithTests + '\\n\\n' +
+              '### Changed Files\\n' +
+              changedFilesList + '\\n\\n' +
+              '### Test Files Found\\n' +
+              testFilesList + '\\n\\n' +
+              '---\\n' +
+              finalMessage + '\\n\\n' +
+              '*This comment will be updated automatically on each push.*';
 
+            // Post the new comment
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
+              issue_number: prNumber,
               body: commentBody,
             });
 
