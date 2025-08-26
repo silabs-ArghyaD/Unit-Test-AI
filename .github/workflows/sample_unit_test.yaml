@@ -369,7 +369,6 @@ jobs:
               [ -z "$inc" ] && continue
               base=$(basename "$inc" .h)
               echo "Looking for ${base}.c or ${base}.cpp..."
-              echo "Current directory: $(pwd)"
               # Look for corresponding .c or .cpp file
               c_file=$(find .. -name "${base}.c" -type f | head -n1 || true)
               cpp_file=$(find .. -name "${base}.cpp" -type f | head -n1 || true)
