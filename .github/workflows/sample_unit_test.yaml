@@ -216,7 +216,28 @@ jobs:
           echo "Test files to validate:"
           cat test_files_list.txt
           
-          echo "=== Using GPT-4.1 for validation ==="
+          echo "=== Using OpenAI GPT-4.1 for validation ==="
+          echo "API Key present: ${OPENAI_API_KEY:0:8}..."
+          
+          # Test LiteLLM connection with detailed output
+          python -c "
+          import litellm
+          import os
+          litellm.set_verbose = True
+          print('Testing LiteLLM connection...')
+          try:
+              response = litellm.completion(
+                  model='openai/gpt-4.1',
+                  messages=[{'role': 'user', 'content': 'test'}],
+                  max_tokens=5
+              )
+              print('✅ LiteLLM connection successful')
+          except Exception as e:
+              print(f'❌ Connection failed: {e}')
+              print(f'Error type: {type(e).__name__}')
+              import traceback
+              traceback.print_exc()
+          " || echo "Connection test script failed"
           
           # Check if validate_tests.py exists
           if [ ! -f "validate_tests.py" ]; then

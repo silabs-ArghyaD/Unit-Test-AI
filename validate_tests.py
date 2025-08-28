@@ -13,7 +13,7 @@ from litellm import completion
 
 # Configure LiteLLM for better error handling
 import litellm
-litellm.set_verbose = False  # Set to True for debugging
+litellm.set_verbose = True  # Enable verbose logging for debugging
 
 def read_file_content(file_path):
     """Read and return the content of a file."""
@@ -32,6 +32,24 @@ def load_validation_template():
         print("Error: Could not load ValidationTemplate.md")
         sys.exit(1)
     return content
+
+def test_api_connection():
+    """Test the API connection before running validation"""
+    try:
+        print("Testing API connection with openai/gpt-4.1...")
+        response = completion(
+            model="openai/gpt-4.1",
+            messages=[{"role": "user", "content": "Hello"}],
+            max_tokens=5
+        )
+        print("✅ API connection successful")
+        return True
+    except Exception as e:
+        print(f"❌ API connection failed: {e}")
+        print(f"Error type: {type(e).__name__}")
+        if hasattr(e, 'response'):
+            print(f"Response: {e.response}")
+        return False
 
 def validate_test_file_with_ai(test_file_path, validation_template):
     """Use GPT-4.1 to validate a test file against the template."""
@@ -68,8 +86,8 @@ Provide a clear PASS/FAIL status and specific recommendations if needed.
 """
 
     try:
-        # Use GPT-4.1 specifically for your LiteLLM token
-        model_name = "gpt-4.1"  # Fixed to GPT-4.1 only
+        # Use GPT-4.1 with OpenAI provider prefix for LiteLLM
+        model_name = "openai/gpt-4.1"  # Fixed to OpenAI GPT-4.1 with provider prefix
         
         # Call GPT-4.1 using LiteLLM proxy
         response = completion(
@@ -121,6 +139,14 @@ def main():
     # Check for OpenAI API key
     if not os.getenv("OPENAI_API_KEY"):
         print("Error: OPENAI_API_KEY environment variable is required")
+        sys.exit(1)
+    
+    print("Using OpenAI GPT-4.1 for validation...")
+    
+    # Test API connection first
+    if not test_api_connection():
+        print("❌ Cannot proceed without API connection")
+        print("Please check your API key and LiteLLM configuration")
         sys.exit(1)
     
     # Load validation template
