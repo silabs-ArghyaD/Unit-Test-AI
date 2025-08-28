@@ -11,8 +11,9 @@ import argparse
 from pathlib import Path
 from litellm import completion
 
-# Configure LiteLLM for better error handling
+# Configure LiteLLM for your custom proxy
 import litellm
+litellm.api_base = "https://litellm.silabs.net/v1"  # Your custom proxy endpoint
 litellm.set_verbose = True  # Enable verbose logging for debugging
 
 def read_file_content(file_path):
@@ -36,11 +37,12 @@ def load_validation_template():
 def test_api_connection():
     """Test the API connection before running validation"""
     try:
-        print("Testing API connection with openai/gpt-4.1...")
+        print("Testing API connection with gpt-4.1 via LiteLLM proxy...")
         response = completion(
-            model="openai/gpt-4.1",
+            model="gpt-4.1",  # Use GPT-4.1 as requested
             messages=[{"role": "user", "content": "Hello"}],
-            max_tokens=5
+            max_tokens=5,
+            api_key=os.getenv("LITELLM_TOKEN")  # Use your token
         )
         print("✅ API connection successful")
         return True
@@ -86,10 +88,10 @@ Provide a clear PASS/FAIL status and specific recommendations if needed.
 """
 
     try:
-        # Use GPT-4.1 with OpenAI provider prefix for LiteLLM
-        model_name = "openai/gpt-4.1"  # Fixed to OpenAI GPT-4.1 with provider prefix
+        # Use GPT-4.1 model via your LiteLLM proxy
+        model_name = "gpt-4.1"
         
-        # Call GPT-4.1 using LiteLLM proxy
+        # Call GPT-4.1 using your LiteLLM proxy
         response = completion(
             model=model_name,
             messages=[
@@ -103,7 +105,8 @@ Provide a clear PASS/FAIL status and specific recommendations if needed.
                 }
             ],
             temperature=0.1,  # Low temperature for consistent results
-            max_tokens=2000
+            max_tokens=2000,
+            api_key=os.getenv("LITELLM_TOKEN")  # Use your token
         )
         
         validation_result = response.choices[0].message.content
@@ -136,17 +139,17 @@ def main():
     
     args = parser.parse_args()
     
-    # Check for OpenAI API key
-    if not os.getenv("OPENAI_API_KEY"):
-        print("Error: OPENAI_API_KEY environment variable is required")
+    # Check for LiteLLM token
+    if not os.getenv("LITELLM_TOKEN"):
+        print("Error: LITELLM_TOKEN environment variable is required")
         sys.exit(1)
     
-    print("Using OpenAI GPT-4.1 for validation...")
+    print("Using GPT-4.1 via LiteLLM proxy for validation...")
     
     # Test API connection first
     if not test_api_connection():
         print("❌ Cannot proceed without API connection")
-        print("Please check your API key and LiteLLM configuration")
+        print("Please check your LITELLM_TOKEN and proxy configuration")
         sys.exit(1)
     
     # Load validation template

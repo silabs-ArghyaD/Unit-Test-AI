@@ -200,14 +200,14 @@ jobs:
       - name: "Run Unit Test Validator with AI"
         if: steps.mapping.outputs.test-files != ''
         env:
-          OPENAI_API_KEY: ${{ secrets.LiteLLM_API_KEY }}
+          LITELLM_TOKEN: ${{ secrets.LiteLLM_API_KEY }}
         run: |
           set -euo pipefail
           echo "=== Running AI-Powered Unit Test Validation ==="
           
-          # Check if API key is available
-          if [ -z "$OPENAI_API_KEY" ]; then
-            echo "⚠️ Warning: OPENAI_API_KEY not set - skipping AI validation"
+          # Check if LiteLLM token is available
+          if [ -z "$LITELLM_TOKEN" ]; then
+            echo "⚠️ Warning: LITELLM_TOKEN not set - skipping AI validation"
             exit 0
           fi
           
@@ -216,8 +216,8 @@ jobs:
           echo "Test files to validate:"
           cat test_files_list.txt
           
-          echo "=== Using OpenAI GPT-4.1 for validation ==="
-          echo "API Key present: ${OPENAI_API_KEY:0:8}..."
+          echo "=== Using GPT-4.1 via LiteLLM proxy for validation ==="
+          echo "LiteLLM Token present: ${LITELLM_TOKEN:0:8}..."
           
           # Test LiteLLM connection with detailed output
           python -c "
