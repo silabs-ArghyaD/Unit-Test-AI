@@ -68,8 +68,8 @@ Provide a clear PASS/FAIL status and specific recommendations if needed.
 """
 
     try:
-        # Get model name from environment or use default
-        model_name = os.getenv("LITELLM_MODEL", "gpt-4-turbo")  # Flexible model configuration
+        # Use GPT-4.1 specifically for your LiteLLM token
+        model_name = "gpt-4.1"  # Fixed to GPT-4.1 only
         
         # Call GPT-4.1 using LiteLLM proxy
         response = completion(

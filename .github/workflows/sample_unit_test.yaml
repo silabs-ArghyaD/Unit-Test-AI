@@ -216,6 +216,8 @@ jobs:
           echo "Test files to validate:"
           cat test_files_list.txt
           
+          echo "=== Using GPT-4.1 for validation ==="
+          
           # Check if validate_tests.py exists
           if [ ! -f "validate_tests.py" ]; then
             echo "❌ Error: validate_tests.py not found in repository root"
