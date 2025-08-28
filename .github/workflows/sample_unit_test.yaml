@@ -197,6 +197,46 @@ jobs:
             echo "test-files=" >> $GITHUB_OUTPUT
           fi
 
+      - name: "Run Unit Test Validator with AI"
+        if: steps.mapping.outputs.test-files != ''
+        env:
+          OPENAI_API_KEY: ${{ secrets.LiteLLM_API_KEY }}
+        run: |
+          set -euo pipefail
+          echo "=== Running AI-Powered Unit Test Validation ==="
+          
+          # Check if API key is available
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "⚠️ Warning: OPENAI_API_KEY not set - skipping AI validation"
+            exit 0
+          fi
+          
+          echo "${{ steps.mapping.outputs.test-files }}" | tr ',' '\n' > test_files_list.txt
+          
+          echo "Test files to validate:"
+          cat test_files_list.txt
+          
+          # Check if validate_tests.py exists
+          if [ ! -f "validate_tests.py" ]; then
+            echo "❌ Error: validate_tests.py not found in repository root"
+            exit 1
+          fi
+          
+          # Check if ValidationTemplate.md exists
+          if [ ! -f "ValidationTemplate.md" ]; then
+            echo "❌ Error: ValidationTemplate.md not found in repository root"
+            exit 1
+          fi
+          
+          python validate_tests.py --test-files test_files_list.txt --output validation_report.md
+          echo "=== VALIDATION COMPLETE ==="
+          echo "=== VALIDATION SUMMARY ==="
+          awk '/^## Summary/{flag=1;print;next}/^$/{if(flag){exit}}flag' validation_report.md || true
+          
+          echo ""
+          echo "=== FULL VALIDATION REPORT ==="
+          cat validation_report.md || echo "No validation report generated"
+
   code-coverage-analysis:
     name: "Code Coverage Analysis"
     runs-on: ubuntu-latest

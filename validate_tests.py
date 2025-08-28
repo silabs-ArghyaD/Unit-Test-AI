@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Unit Test Validator using LiteLLM and GPT-4o
+Unit Test Validator using LiteLLM and GPT-4.1
 This script validates existing test cases against the validation template.
 """
 
@@ -10,6 +10,10 @@ import sys
 import argparse
 from pathlib import Path
 from litellm import completion
+
+# Configure LiteLLM for better error handling
+import litellm
+litellm.set_verbose = False  # Set to True for debugging
 
 def read_file_content(file_path):
     """Read and return the content of a file."""
@@ -30,7 +34,7 @@ def load_validation_template():
     return content
 
 def validate_test_file_with_ai(test_file_path, validation_template):
-    """Use GPT-4o to validate a test file against the template."""
+    """Use GPT-4.1 to validate a test file against the template."""
     
     # Read the test file content
     test_content = read_file_content(test_file_path)
@@ -41,7 +45,7 @@ def validate_test_file_with_ai(test_file_path, validation_template):
             "error": f"Could not read test file: {test_file_path}"
         }
     
-    # Create the prompt for GPT-4o
+    # Create the prompt for GPT-4.1
     prompt = f"""
 You are a unit test validator. Please analyze the following test file against the provided validation template.
 
@@ -64,9 +68,12 @@ Provide a clear PASS/FAIL status and specific recommendations if needed.
 """
 
     try:
-        # Call GPT-4o using LiteLLM
+        # Get model name from environment or use default
+        model_name = os.getenv("LITELLM_MODEL", "gpt-4-turbo")  # Flexible model configuration
+        
+        # Call GPT-4.1 using LiteLLM proxy
         response = completion(
-            model="gpt-4o",
+            model=model_name,
             messages=[
                 {
                     "role": "system", 
