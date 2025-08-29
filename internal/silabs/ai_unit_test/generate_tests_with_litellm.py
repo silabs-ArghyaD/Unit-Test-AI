@@ -36,8 +36,55 @@ def compute_output_path(src_path: Path, out_dir: Optional[str]) -> Path:
     # put next to source by default
     return (src_path.parent / default_name).resolve()
 
-def build_prompt(unit_test_template: str, source_path: Path, source_code: str) -> str:
-    return f"""You are generating a C++ unit test file for the provided component implementation.
+def parse_coverage_report(coverage_path: Path, source_filename: str) -> Optional[str]:
+    """Parse coverage report and extract information for the specific source file."""
+    try:
+        coverage_content = read_text(coverage_path)
+        if not coverage_content:
+            return None
+        
+        lines = coverage_content.split('\n')
+        coverage_info = []
+        in_file_section = False
+        total_coverage = None
+        
+        # Extract overall coverage summary
+        for line in lines:
+            if 'TOTAL' in line and '%' in line:
+                # Extract total coverage percentage
+                match = re.search(r'(\d+\.?\d*)%', line)
+                if match:
+                    total_coverage = match.group(1)
+            
+            # Look for the specific source file
+            if source_filename in line:
+                parts = line.split()
+                if len(parts) >= 4:
+                    # Try to parse coverage line format: File Lines Exec Cover Missing
+                    for i, part in enumerate(parts):
+                        if '%' in part:
+                            coverage_info.append(f"File coverage: {part}")
+                            if i > 0 and parts[i-1].isdigit():
+                                coverage_info.append(f"Lines executed: {parts[i-1]} out of total lines")
+                            break
+        
+        result = []
+        if total_coverage:
+            result.append(f"Overall project coverage: {total_coverage}%")
+        
+        if coverage_info:
+            result.extend(coverage_info)
+        elif total_coverage:
+            result.append(f"Specific file coverage not found, but overall coverage is {total_coverage}%")
+        
+        return '\n'.join(result) if result else None
+        
+    except Exception as e:
+        print(f"❌ Error parsing coverage file: {e}")
+        return None
+
+def build_prompt(unit_test_template: str, source_path: Path, source_code: str, coverage_info: Optional[str] = None) -> str:
+    base_prompt = f"""You are generating a C++ unit test file for the provided component implementation.
 Follow the style and requirements from the UNIT TEST TEMPLATE below.
 
 UNIT TEST TEMPLATE (authoritative):
@@ -48,7 +95,21 @@ SOURCE FILE UNDER TEST: {source_path}
 SOURCE IMPLEMENTATION CONTENT:
 ```cpp
 {source_code}
-```
+```"""
+
+    if coverage_info:
+        base_prompt += f"""
+
+CURRENT CODE COVERAGE INFORMATION:
+{coverage_info}
+
+COVERAGE IMPROVEMENT GUIDANCE:
+- Focus on improving test coverage for areas that are currently under-tested
+- Add tests for edge cases, error conditions, and boundary values
+- Ensure comprehensive coverage of all public methods and functions which are not covered by existing tests
+- Consider negative test cases and exception handling"""
+
+    base_prompt += """
 
 RESPONSE RULES (MUST FOLLOW):
 - Return ONLY the contents of a single valid C++ test file.
@@ -58,8 +119,13 @@ RESPONSE RULES (MUST FOLLOW):
 - Name the test suite as instructed by the template (e.g., <ComponentName>Validation or <ComponentName>Test).
 - Ensure it compiles assuming the component is located as shown in the include paths.
 - Include at least one positive and one negative test if meaningful.
-- Keep it concise and focused on template conformance.
-"""
+- Keep it concise and focused on template conformance."""
+
+    if coverage_info:
+        base_prompt += """
+- Prioritize test cases that will improve code coverage based on the coverage information provided."""
+
+    return base_prompt
 
 def extract_cpp(raw: str) -> str:
     """Extract raw C++ from a model response that might include markdown fences."""
@@ -101,6 +167,7 @@ def main():
     parser = argparse.ArgumentParser(description="Generate C++ test file from UnitTestTemplate.md using LiteLLM GPT-4.1")
     parser.add_argument("source", help="Path to the component .cpp file to create tests for")
     parser.add_argument("--template", help="Path to UnitTestTemplate.md (defaults to file next to this script)")
+    parser.add_argument("--coverage", help="Path to coverage report text file to analyze and improve coverage")
     parser.add_argument("--out-dir", help="Directory to write the generated test (defaults next to source)")
     parser.add_argument("--overwrite", action="store_true", help="Allow overwriting the output file")
     args = parser.parse_args()
@@ -131,13 +198,30 @@ def main():
         print(f"❌ Output already exists: {out_path}. Use --overwrite to replace it.")
         sys.exit(1)
 
+    # Parse coverage information if provided
+    coverage_info = None
+    if args.coverage:
+        coverage_path = Path(args.coverage).expanduser().resolve()
+        if not coverage_path.exists():
+            print(f"❌ Coverage file not found: {coverage_path}")
+            sys.exit(1)
+        
+        source_filename = src_path.name
+        coverage_info = parse_coverage_report(coverage_path, source_filename)
+        if coverage_info:
+            print(f"📊 Found coverage information for {source_filename}")
+        else:
+            print(f"⚠️ No specific coverage info found for {source_filename}, using general coverage data")
+
     print(f"🧪 Generating test for: {src_path}")
     print(f"📄 Using template: {template_path}")
+    if args.coverage:
+        print(f"📊 Using coverage data: {coverage_path}")
     print(f"📝 Output file: {out_path}")
 
     try:
         raw = call_litellm_gpt41(
-            build_prompt(unit_test_template, src_path, source_code),
+            build_prompt(unit_test_template, src_path, source_code, coverage_info),
             token=token
         )
         cpp_test_code = extract_cpp(raw)

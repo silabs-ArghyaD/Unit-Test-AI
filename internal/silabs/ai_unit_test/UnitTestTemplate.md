@@ -6,18 +6,22 @@
 ```cpp
 // filepath: src/app/tests/Test{YourComponent}.cpp
 
-#include <lib/core/StringBuilderAdapters.h>
-#include <pw_unit_test/framework.h>
-#include <app/data-model/Nullable.h>
+// #include <lib/core/StringBuilderAdapters.h>
+// #include <pw_unit_test/framework.h>
+// #include <app/data-model/Nullable.h>
 
 // Include your component's header file
-#include <app/clusters/{your-cluster}/{your-component}.h>
+// #include <app/clusters/{your-cluster}/{your-component}.h>
 
-using namespace chip;
-using namespace chip::app;
-using namespace chip::app::DataModel;
-using namespace chip::app::Clusters::{YourCluster};
+#include <gtest/gtest.h>
+#include "../../../<YourComponent>.h"
 
+// using namespace chip;
+// using namespace chip::app;
+// using namespace chip::app::DataModel;
+// using namespace chip::app::Clusters::{YourCluster};
+
+// Note: These are sample tests for the {YourComponent} component. Only add them if they are relevant to your implementation.
 // Test Suite: {YourComponent}Validation
 TEST({YourComponent}Validation, InitialStateIsCorrect)
 {
@@ -102,22 +106,24 @@ TEST({YourComponent}Validation, ErrorHandlingIsRobust)
 
 #### 1. **Standard Headers**
 ```cpp
-#include <lib/core/StringBuilderAdapters.h>
-#include <pw_unit_test/framework.h>
-#include <app/data-model/Nullable.h>
+// #include <lib/core/StringBuilderAdapters.h>
+// #include <pw_unit_test/framework.h>
+// #include <app/data-model/Nullable.h>
+#include <gtest/gtest.h>
+#include "../../../ClosureManager.h"
 ```
-- Essential Matter framework headers for testing
+<!-- - Essential Matter framework headers for testing
 - `pw_unit_test` provides the testing framework
-- `StringBuilderAdapters` for string handling utilities
+- `StringBuilderAdapters` for string handling utilities -->
 
-#### 2. **Namespace Usage**
+<!-- #### 2. **Namespace Usage**
 ```cpp
 using namespace chip;
 using namespace chip::app;
 using namespace chip::app::DataModel;
 ```
 - Simplifies code by avoiding repetitive namespace prefixes
-- Standard pattern across Matter codebase
+- Standard pattern across Matter codebase -->
 
 #### 3. **Test Structure Pattern**
 ```cpp

@@ -8,9 +8,8 @@ You are a basic code validator for Matter unit tests. Your task is to check only
 
 ### 1. **Component Header Inclusion**
 - [ ] Check if the component's .cpp file is included
-- Look for `#include` statements that reference the .cpp file being tested
+- Look for `#include` statements that reference the .cpp or .h file being tested
 - Example: `#include "../../../ClosureManager.cpp"` or `#include <app/clusters/door-lock/DoorLockManager.cpp>`
-- Note: .h file inclusion is optional, .cpp file inclusion is required
 
 ### 2. **Test Function Naming**
 - [ ] Verify all test functions start with "TEST"
@@ -40,10 +39,10 @@ When evaluating a unit test file, provide feedback in this simple format:
 ### ❌ Failed Checks  
 - [List what failed]
 
-### 📋 Simple Recommendations
+### Simple Recommendations
 - [Brief suggestions to fix issues]
 
-### 🎯 Status: [PASS/FAIL]
+### Status: [PASS/FAIL]
 ```
 
 ## Examples
