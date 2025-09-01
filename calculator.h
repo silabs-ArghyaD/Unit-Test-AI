@@ -52,6 +52,14 @@ int is_even(int n);
  */
 int max(int a, int b);
 
+/**
+ * @brief Find minimum of two integers
+ * @param a First integer
+ * @param b Second integer
+ * @return Minimum of a and b
+ */
+int min(int a, int b);
+
 #ifdef __cplusplus
 }
 #endif

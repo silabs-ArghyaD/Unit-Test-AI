@@ -600,3 +600,300 @@ jobs:
               body: commentBody,
             });
 
+  generate-additional-tests:
+    name: "Generate Additional Tests"
+    runs-on: ubuntu-latest
+    needs: [code-coverage-analysis]
+    if: needs.code-coverage-analysis.outputs.actual-coverage != '' && needs.code-coverage-analysis.outputs.actual-coverage != '0'
+
+    steps:
+      - name: "Checkout code"
+        uses: actions/checkout@v4
+
+      - name: "Generate Additional Tests with AI"
+        if: steps.coverage.outputs.actual-coverage != '' && steps.coverage.outputs.actual-coverage != '0'
+        env:
+          LITELLM_TOKEN: ${{ secrets.LITELLM_TOKEN }}
+          CPP_FILES: ${{ needs.analyze-pr-changes.outputs.cpp-files }}
+        run: |
+          set -euo pipefail
+          echo "=== Generating Additional Tests with AI ==="
+          
+          # Check if we have the test generation script
+          if [ ! -f "internal/silabs/ai_unit_test/generate_tests_with_litellm.py" ]; then
+            echo "❌ Test generation script not found"
+            exit 1
+          fi
+          
+          if [ ! -f "internal/silabs/ai_unit_test/UnitTestTemplate.md" ]; then
+            echo "❌ UnitTestTemplate.md not found"
+            exit 1
+          fi
+          
+          # Store original coverage for comparison
+          ORIGINAL_COVERAGE="${{ steps.coverage.outputs.actual-coverage }}"
+          echo "Original coverage: ${ORIGINAL_COVERAGE}%"
+          
+          # Generate tests for each C/C++ source file
+          IFS=',' read -ra cpp_files <<< "$CPP_FILES"
+          generated_tests=""
+          
+          for cpp_file in "${cpp_files[@]}"; do
+            [ -z "$cpp_file" ] && continue
+            
+            # Skip header files and test files
+            if [[ "$cpp_file" == *.h ]] || [[ "$cpp_file" == *.hpp ]] || [[ "$cpp_file" == *Test* ]] || [[ "$cpp_file" == *test* ]]; then
+              echo "Skipping $cpp_file (header or test file)"
+              continue
+            fi
+            
+            echo "Generating test for: $cpp_file"
+            
+            if python internal/silabs/ai_unit_test/generate_tests_with_litellm.py \
+                "$cpp_file" \
+                --template internal/silabs/ai_unit_test/UnitTestTemplate.md \
+                --coverage coverage_summary.txt \
+                --out-dir src/app/tests/ \
+                --overwrite; then
+              
+              test_name=$(basename "$cpp_file" .cpp)
+              test_name=$(basename "$test_name" .c)
+              generated_test="src/app/tests/Test_${test_name}.cpp"
+              
+              if [ -f "$generated_test" ]; then
+                echo "✅ Generated: $generated_test"
+                generated_tests="${generated_tests},$generated_test"
+              fi
+            else
+              echo "⚠️ Failed to generate test for: $cpp_file"
+            fi
+          done
+          
+          # Remove leading comma
+          generated_tests="${generated_tests#,}"
+          
+          if [ -n "$generated_tests" ]; then
+            echo "=== Generated test files: ==="
+            echo "$generated_tests" | tr ',' '\n'
+            echo "generated-tests=$generated_tests" >> $GITHUB_OUTPUT
+          else
+            echo "No tests were generated"
+            echo "generated-tests=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: "Build & Run Tests with Coverage (After AI Generation)"
+        if: steps.generate-tests.outputs.generated-tests != ''
+        id: coverage-after-ai
+        env:
+          REQUIRED_COVERAGE: ${{ needs.analyze-pr-changes.outputs.required-coverage }}
+          TEST_FILES: ${{ needs.find-and-validate-tests.outputs.test-files }}
+          GENERATED_TESTS: ${{ steps.generate-tests.outputs.generated-tests }}
+          CPP_FILES: ${{ needs.analyze-pr-changes.outputs.cpp-files }}
+        run: |
+          echo "=== Running Coverage Analysis After AI Test Generation ==="
+          
+          # Combine original and generated test files
+          ALL_TESTS="$TEST_FILES"
+          if [ -n "$GENERATED_TESTS" ]; then
+            if [ -n "$ALL_TESTS" ]; then
+              ALL_TESTS="$ALL_TESTS,$GENERATED_TESTS"
+            else
+              ALL_TESTS="$GENERATED_TESTS"
+            fi
+          fi
+          
+          echo "All test files (original + generated): $ALL_TESTS"
+          
+          # Clean previous build artifacts
+          rm -rf build/*
+          cd build
+          
+          fail_count=0
+          pass_count=0
+          
+          # Build and run all tests (same logic as before)
+          while IFS= read -r tf; do
+            [ -z "$tf" ] && continue
+            echo ""
+            echo "=== Processing test: $tf ==="
+            test_name=$(basename "$tf")
+            exe_name="${test_name%.*}"
+
+            # Generic source file detection
+            srcs=""
+            echo "Looking for includes in $tf..."
+            includes=$(grep -oE '#include *["<][^">]+\.h' "../$tf" | sed 's/#include *["<]//' | sed 's/"//' || true)
+            echo "Found includes: $includes"
+            for inc in $includes; do
+              [ -z "$inc" ] && continue
+              base=$(basename "$inc" .h)
+              echo "Looking for ${base}.c or ${base}.cpp..."
+              c_file=$(find .. -name "${base}.c" -type f | head -n1 || true)
+              cpp_file=$(find .. -name "${base}.cpp" -type f | head -n1 || true)
+              
+              if [ -n "$c_file" ] && [ -f "$c_file" ]; then
+                srcs="$srcs $c_file"
+                echo "Found C source: $c_file"
+              elif [ -n "$cpp_file" ] && [ -f "$cpp_file" ]; then
+                srcs="$srcs $cpp_file"
+                echo "Found C++ source: $cpp_file"
+              fi
+            done
+
+            echo "Source files to link: $srcs"
+
+            # Compile and run test
+            if [ -n "$srcs" ]; then
+              if g++ -std=c++17 -fprofile-arcs -ftest-coverage -pthread "../$tf" $srcs -lgtest -lgtest_main -o "$exe_name" 2>&1; then
+                echo "✅ Build OK: $tf"
+                if ./"$exe_name" 2>&1; then
+                  echo "✅ Tests passed: $tf"
+                  pass_count=$((pass_count+1))
+                else
+                  echo "⚠️ Tests failed but continuing: $tf"
+                fi
+              else
+                echo "❌ Build failed: $tf"
+                fail_count=$((fail_count+1))
+              fi
+            else
+              if g++ -std=c++17 -fprofile-arcs -ftest-coverage -pthread "../$tf" -lgtest -lgtest_main -o "$exe_name" 2>&1; then
+                echo "✅ Build OK: $tf (self-contained)"
+                if ./"$exe_name" 2>&1; then
+                  echo "✅ Tests passed: $tf"
+                  pass_count=$((pass_count+1))
+                else
+                  echo "⚠️ Tests failed but continuing: $tf"
+                fi
+              else
+                echo "❌ Build failed: $tf"
+                fail_count=$((fail_count+1))
+              fi
+            fi
+          done < <(echo "$ALL_TESTS" | tr ',' '\n')
+
+          echo "Build summary after AI generation: pass=$pass_count, fail=$fail_count"
+
+          # Generate new coverage report
+          cd ..
+          echo "=== Generating coverage report after AI test generation ==="
+          
+          if command -v gcovr >/dev/null 2>&1; then
+            gcovr --root . --gcov-executable gcov --exclude-unreachable-branches --txt > coverage_summary_after_ai.txt 2>&1 || true
+          else
+            lcov --capture --directory . --output-file coverage_after_ai.info 2>&1 || true
+            lcov --list coverage_after_ai.info > coverage_summary_after_ai.txt 2>&1 || true
+          fi
+
+          echo "=== COVERAGE SUMMARY AFTER AI (raw) ==="
+          cat coverage_summary_after_ai.txt || echo "No coverage summary generated"
+
+          # Extract new coverage percentage
+          PCT_AFTER=""
+          PCT_AFTER=$(grep -Eo 'lines:\s*[0-9.]+%' coverage_summary_after_ai.txt | tail -1 | tr -dc '0-9.' || true)
+          if [ -z "$PCT_AFTER" ]; then
+            PCT_AFTER=$(grep -Eo '[0-9.]+%' coverage_summary_after_ai.txt | tail -1 | tr -dc '0-9.' || true)
+          fi
+          if [ -z "$PCT_AFTER" ]; then
+            PCT_AFTER=$(grep -i "TOTAL" coverage_summary_after_ai.txt | grep -Eo '[0-9.]+%' | tr -dc '0-9.' || true)
+          fi
+          PCT_AFTER=${PCT_AFTER:-0}
+          
+          echo "Coverage after AI generation: ${PCT_AFTER}%"
+          echo "actual-coverage-after-ai=$PCT_AFTER" >> $GITHUB_OUTPUT
+
+      - name: "Post Final Coverage Comment with AI Generation Summary"
+        if: always()
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const botUserId = 'github-actions[bot]';
+            
+            // Delete previous coverage comments
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+            });
+            
+            for (const comment of comments) {
+              if (comment.user.login === botUserId && comment.body.includes('Code Coverage Report')) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: comment.id,
+                });
+              }
+            }
+            
+            // Prepare the coverage data
+            const requiredCoverage = '${{ needs.analyze-pr-changes.outputs.required-coverage }}';
+            const originalCoverage = '${{ steps.coverage.outputs.actual-coverage }}' || '0';
+            const finalCoverage = '${{ steps.coverage-after-ai.outputs.actual-coverage-after-ai }}' || originalCoverage;
+            const generatedTests = '${{ steps.generate-tests.outputs.generated-tests }}' || '';
+            const totalChanges = '${{ needs.analyze-pr-changes.outputs.total-changes }}';
+            const cppFiles = '${{ needs.analyze-pr-changes.outputs.cpp-files }}';
+            const testFiles = '${{ needs.find-and-validate-tests.outputs.test-files }}';
+            const filesWithTests = '${{ needs.find-and-validate-tests.outputs.files-with-tests }}';
+            
+            const finalStatus = parseFloat(finalCoverage) >= parseFloat(requiredCoverage) ? '✅' : '❌';
+            const improvementMade = parseFloat(finalCoverage) > parseFloat(originalCoverage);
+            
+            const changedFilesList = cppFiles ? cppFiles.split(',').map(f => `- \`${f.trim()}\``).join('\n') : '- None';
+            const originalTestsList = testFiles ? testFiles.split(',').map(f => `- \`${f.trim()}\``).join('\n') : '- None found';
+            const generatedTestsList = generatedTests ? generatedTests.split(',').map(f => `- \`${f.trim()}\` (AI Generated)`).join('\n') : '';
+            
+            const allTestsList = [originalTestsList, generatedTestsList].filter(Boolean).join('\n');
+            
+            const passedMessage = '🎉 **Great job!** Your code coverage meets the requirements.';
+            const failedMessage = `📝 **Action Required**: Code coverage is still below the required threshold of ${requiredCoverage}%. Consider adding more comprehensive tests.`;
+            const finalMessage = parseFloat(finalCoverage) >= parseFloat(requiredCoverage) ? passedMessage : failedMessage;
+            
+            let aiGenerationSection = '';
+            if (generatedTests) {
+              const improvementText = improvementMade ? 
+                `📈 **Coverage improved** from ${originalCoverage}% to ${finalCoverage}% (+${(parseFloat(finalCoverage) - parseFloat(originalCoverage)).toFixed(1)}%)` :
+                `📊 **Coverage remained** at ${finalCoverage}%`;
+              
+              aiGenerationSection = `
+              ### 🤖 AI Test Generation Results
+              - **Tests Generated**: ${generatedTests.split(',').length} new test file(s)
+              - **Before AI**: ${originalCoverage}%
+              - **After AI**: ${finalCoverage}%
+              - **Result**: ${improvementText}
+              `;
+            }
+
+            const commentBody = [
+              `## 🎯 Code Coverage Report`,
+              '',
+              '### Coverage Summary',
+              `- **Required Coverage**: ${requiredCoverage}%`,
+              `- **Final Coverage**: ${finalCoverage}%`,
+              `- **Status**: ${finalStatus} ${parseFloat(finalCoverage) >= parseFloat(requiredCoverage) ? 'PASSED' : 'FAILED'}`,
+              aiGenerationSection,
+              '### PR Analysis',
+              `- **Total C/C++ Lines Added**: ${totalChanges}`,
+              `- **Files with Existing Tests**: ${filesWithTests}`,
+              '',
+              '### Changed Files',
+              changedFilesList,
+              '',
+              '### Test Files',
+              allTestsList,
+              '',
+              '---',
+              finalMessage,
+              '',
+              '*This comment includes AI-generated test results and will be updated automatically on each push.*'
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: commentBody,
+            });
+

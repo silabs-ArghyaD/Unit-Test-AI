@@ -45,3 +45,10 @@ int is_even(int n) {
 int max(int a, int b) {
     return (a > b) ? a : b;
 }
+
+/**
+ * @brief Find minimum of two integers
+ */
+int min(int a, int b) {
+    return (a < b) ? a : b;
+}
